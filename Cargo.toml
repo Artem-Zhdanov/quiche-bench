@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.32.0", features = ["full"] }
 quiche = "0.24.2"
+anyhow = "1.0.98"
+ring = "0.17.14"
