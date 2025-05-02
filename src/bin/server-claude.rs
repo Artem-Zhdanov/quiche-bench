@@ -6,11 +6,13 @@ use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 // Используем последнюю версию quiche
-use quiche::{Config, Connection, ConnectionId, Header, RecvInfo, SendInfo};
+use quiche::{Config, ConnectionId, Header, RecvInfo};
 
 // Структура для хранения информации о соединении клиента
 pub struct Client {
     pub conn: quiche::Connection,
+    pub bytes_received: usize,
+    pub first_seen: Instant,
     pub last_seen: Instant,
 }
 #[tokio::main]
@@ -45,7 +47,6 @@ async fn main() -> Result<(), anyhow::Error> {
     config.load_priv_key_from_pem_file("cert.key")?;
     config.verify_peer(false);
 
-    let mut total_bytes_received = 0;
     loop {
         match socket.recv_from(&mut read_buf) {
             Ok((len, peer_addr)) => {
@@ -102,6 +103,8 @@ async fn main() -> Result<(), anyhow::Error> {
                         client_addr.clone(),
                         Client {
                             conn,
+                            bytes_received: 0,
+                            first_seen: Instant::now(),
                             last_seen: Instant::now(),
                         },
                     );
@@ -174,14 +177,15 @@ async fn main() -> Result<(), anyhow::Error> {
                     match client.conn.stream_recv(stream_id, &mut stream_buf) {
                         Ok((read, fin)) => {
                             let data = &stream_buf[..read];
-                            total_bytes_received += read;
+                            client.bytes_received += read;
                             println!(
-                                "Got {} bytes from {} on thread {:?} (fin: {}). total: {} bytes",
+                                "Got {} bytes from {} on thread {:?} (fin: {}). total: {} bytes, elapsed {:?}",
                                 data.len(),
                                 client_addr,
                                 stream_id,
                                 fin,
-                                total_bytes_received
+                                client.bytes_received,
+                                client.first_seen.elapsed(),
                             );
 
                             // Если поток завершен с нашей стороны
@@ -218,6 +222,6 @@ async fn main() -> Result<(), anyhow::Error> {
             active_connections.remove(&client_addr);
         }
 
-        tokio::task::yield_now().await;
+        // tokio::task::yield_now().await;
     }
 }

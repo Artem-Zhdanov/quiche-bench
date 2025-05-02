@@ -246,7 +246,7 @@ async fn main() -> Result<(), anyhow::Error> {
         }
 
         // Небольшая задержка, чтобы не нагружать процессор
-        thread::sleep(Duration::from_millis(10));
+        // thread::sleep(Duration::from_millis(10));
     }
 
     println!("Соединение закрыто");

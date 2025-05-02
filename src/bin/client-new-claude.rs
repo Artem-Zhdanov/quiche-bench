@@ -1,6 +1,5 @@
-use quiche::{Config, Connection, ConnectionId, Header, RecvInfo, SendInfo};
+use quiche::{Config, Connection, ConnectionId, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
-use std::collections::HashMap;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::thread;
@@ -12,29 +11,25 @@ const CONNECTION_TIMEOUT_SECS: u64 = 20;
 const IDLE_TIMEOUT_MS: u64 = 60000;
 const INITIAL_MAX_DATA: u64 = 100_000_000; // 100 MB
 const INITIAL_MAX_STREAM_DATA: u64 = 10_000_000; // 10 MB
-const MAX_MESSAGE_SIZE: usize = 300 * 1024; // 300 KB
+const MESSAGE_SIZE: usize = 300 * 1024; // 300 KB
 const MAX_MESSAGES: usize = 10;
 const POLL_INTERVAL_MS: u64 = 1;
-const RETRY_INTERVAL_MS: u64 = 10;
+const RETRY_INTERVAL_MS: u64 = 1;
 
 struct QuicClient {
     socket: UdpSocket,
     conn: Connection,
     server_addr: SocketAddr,
     stream_id: Option<u64>,
-    connection_established: bool,
+    stream_is_open: bool,
     message_count: usize,
 }
 
 impl QuicClient {
     fn new(server_addr: SocketAddr, client_addr: SocketAddr) -> anyhow::Result<Self> {
-        // Create UDP socket
         let socket = UdpSocket::bind(client_addr)?;
         socket.set_nonblocking(true)?;
 
-        println!("Client started at {}", socket.local_addr()?);
-
-        // Configure QUIC
         let mut config = Self::create_config()?;
 
         // Generate connection ID
@@ -44,15 +39,14 @@ impl QuicClient {
         let scid = ConnectionId::from_ref(&scid);
 
         // Create connection
-        let mut conn =
-            quiche::connect(None, &scid, socket.local_addr()?, server_addr, &mut config)?;
+        let conn = quiche::connect(None, &scid, socket.local_addr()?, server_addr, &mut config)?;
 
         Ok(Self {
             socket,
             conn,
             server_addr,
             stream_id: None,
-            connection_established: false,
+            stream_is_open: false,
             message_count: 0,
         })
     }
@@ -127,7 +121,8 @@ impl QuicClient {
         loop {
             match self.conn.send(&mut out) {
                 Ok((write, _)) => {
-                    self.socket.send_to(&out[..write], self.server_addr)?;
+                    let bytes = self.socket.send_to(&out[..write], self.server_addr)?;
+                    assert_eq!(write, bytes, "Must always be equal")
                 }
                 Err(quiche::Error::Done) => {
                     break; // No more data to send
@@ -142,12 +137,12 @@ impl QuicClient {
         Ok(())
     }
 
-    fn check_connection_status(&mut self) -> bool {
-        if self.conn.is_established() && !self.connection_established {
+    fn open_stream_once(&mut self) -> bool {
+        if self.conn.is_established() && !self.stream_is_open {
             println!("QUIC connection established!");
             println!("Handshake completed successfully.");
 
-            self.connection_established = true;
+            self.stream_is_open = true;
 
             // Open a bidirectional stream
             let stream = 0;
@@ -161,7 +156,7 @@ impl QuicClient {
     }
 
     fn send_message(&mut self) -> Result<bool, io::Error> {
-        if !self.connection_established || self.message_count >= MAX_MESSAGES {
+        if !self.stream_is_open || self.message_count >= MAX_MESSAGES {
             return Ok(false);
         }
 
@@ -169,7 +164,7 @@ impl QuicClient {
             self.message_count += 1;
 
             // Create message data
-            let buffer = vec![42u8; MAX_MESSAGE_SIZE];
+            let buffer = vec![42u8; MESSAGE_SIZE];
 
             println!(
                 "Sending large message #{} of size {} bytes",
@@ -216,8 +211,6 @@ impl QuicClient {
                 self.message_count, total_size
             );
 
-            // Delay between messages
-            thread::sleep(Duration::from_secs(1));
             return Ok(true);
         }
 
@@ -242,7 +235,7 @@ impl QuicClient {
             }
 
             // Begin connection shutdown
-            self.conn.close(true, 0, b"Done");
+            _ = self.conn.close(true, 0, b"Done");
             println!("Closing connection...");
         }
 
@@ -250,7 +243,6 @@ impl QuicClient {
     }
 
     fn run(&mut self) -> Result<(), io::Error> {
-        // Send initial packet
         self.send_initial_packet()?;
 
         // Start time for timeout tracking
@@ -259,7 +251,7 @@ impl QuicClient {
         while !self.conn.is_closed() {
             // Check for connection timeout
             if start.elapsed() > Duration::from_secs(CONNECTION_TIMEOUT_SECS)
-                && !self.connection_established
+                && !self.stream_is_open
             {
                 println!("Connection timeout");
                 break;
@@ -271,11 +263,9 @@ impl QuicClient {
             // Send outgoing packets
             self.flush_outgoing_packets()?;
 
-            // Check if connection is established
-            self.check_connection_status();
+            self.open_stream_once();
 
-            // If connected, send messages
-            if self.connection_established {
+            if self.stream_is_open {
                 if self.message_count < MAX_MESSAGES {
                     self.send_message()?;
                 } else if self.stream_id.is_some() {
@@ -285,7 +275,7 @@ impl QuicClient {
             }
 
             // Reduce CPU usage
-            thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+            // thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
         }
 
         println!("Connection closed");
