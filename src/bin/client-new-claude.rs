@@ -14,7 +14,7 @@ const INITIAL_MAX_STREAM_DATA: u64 = 10_000_000; // 10 MB
 const MESSAGE_SIZE: usize = 300 * 1024; // 300 KB
 const MAX_MESSAGES: usize = 10;
 const POLL_INTERVAL_MS: u64 = 1;
-const RETRY_INTERVAL_MS: u64 = 1;
+const RETRY_INTERVAL_MS: u64 = 100;
 
 struct QuicClient {
     socket: UdpSocket,
@@ -145,7 +145,7 @@ impl QuicClient {
             self.stream_is_open = true;
 
             // Open a bidirectional stream
-            let stream = 0;
+            let stream = 5;
             self.stream_id = Some(stream);
 
             println!("Opened stream {}", stream);
@@ -167,9 +167,10 @@ impl QuicClient {
             let buffer = vec![42u8; MESSAGE_SIZE];
 
             println!(
-                "Sending large message #{} of size {} bytes",
+                "Sending large message #{} of size {} bytes: LEFT {}",
                 self.message_count,
-                buffer.len()
+                buffer.len(),
+                self.conn.peer_streams_left_uni(),
             );
 
             let mut offset = 0;
@@ -192,16 +193,47 @@ impl QuicClient {
                         println!("Stream buffer full, waiting...");
 
                         // Wait and process incoming packets to clear flow control
-                        thread::sleep(Duration::from_millis(RETRY_INTERVAL_MS));
-                        self.poll_incoming_packets()?;
-                        self.flush_outgoing_packets()?;
+
+                        // Process incoming packets in a loop until we can send again
+                        let retry_start = Instant::now();
+                        let mut progress_made = false;
+
+                        while !progress_made && retry_start.elapsed() < Duration::from_secs(5) {
+                            // Process incoming data that might free up flow control
+                            self.poll_incoming_packets()?;
+                            self.flush_outgoing_packets()?;
+
+                            // Try sending again
+                            match self.conn.stream_send(stream, &buffer[offset..], false) {
+                                Ok(written) => {
+                                    println!("Retry successful: sent {} bytes", written);
+                                    offset += written;
+                                    progress_made = true;
+                                }
+                                Err(quiche::Error::Done) => {
+                                    // Still can't send, sleep a bit before retrying
+                                    thread::sleep(Duration::from_millis(RETRY_INTERVAL_MS));
+                                }
+                                Err(e) => {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::Other,
+                                        format!("Stream error: {:?}", e),
+                                    ));
+                                }
+                            }
+                        }
+
+                        if !progress_made {
+                            println!("Warning: Timed out waiting for flow control");
+                        }
                     }
                     Err(e) => {
                         println!("Error sending data to stream: {:?}", e);
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "Failed to send stream data",
-                        ));
+                        thread::sleep(Duration::from_millis(RETRY_INTERVAL_MS));
+                        // return Err(io::Error::new(
+                        //     io::ErrorKind::Other,
+                        //     "Failed to send stream data",
+                        // ));
                     }
                 }
             }
@@ -285,8 +317,8 @@ impl QuicClient {
 
 fn main() {
     // Client settings
-    let server_addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-    let client_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let server_addr: SocketAddr = "94.156.25.224:5000".parse().unwrap();
+    let client_addr: SocketAddr = "94.156.25.224:0".parse().unwrap();
     println!("Connecting to QUIC server at {}", server_addr);
 
     // Create and run client

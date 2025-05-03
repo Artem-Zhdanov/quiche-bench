@@ -1,28 +1,25 @@
-// Импортируем необходимые библиотеки
+use quiche::{ConnectionId, Header, RecvInfo};
+use quiche_bench::create_config;
 use ring::rand::{SecureRandom, SystemRandom};
 use std::collections::HashMap;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
-// Используем последнюю версию quiche
-use quiche::{Config, ConnectionId, Header, RecvInfo};
-
-// Структура для хранения информации о соединении клиента
 pub struct Client {
     pub conn: quiche::Connection,
     pub bytes_received: usize,
     pub first_seen: Instant,
     pub last_seen: Instant,
 }
+
+const SERVER_ADDRESS: &str = "94.156.25.224:5000";
+
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let server_addr = "127.0.0.1:5000";
-    let max_packet_size = 1350;
+    println!("Server started on: {}", SERVER_ADDRESS);
 
-    println!("Server started on: {}", server_addr);
-
-    let socket = UdpSocket::bind(server_addr)?;
+    let socket = UdpSocket::bind(SERVER_ADDRESS)?;
     socket.set_nonblocking(true)?;
 
     let rng = SystemRandom::new();
@@ -32,20 +29,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut read_buf = [0; 65535];
     let mut write_buf = [0; 65535];
 
-    let mut config = Config::new(quiche::PROTOCOL_VERSION)?;
-    config.set_application_protos(&[b"\x05myapp"])?;
-    config.set_max_idle_timeout(30000); // 30 секунд
-    config.set_max_recv_udp_payload_size(max_packet_size);
-    config.set_max_send_udp_payload_size(max_packet_size);
-    config.set_initial_max_data(10_000_000); // 10 MB
-    config.set_initial_max_stream_data_bidi_local(1_000_000); // 1 MB
-    config.set_initial_max_stream_data_bidi_remote(1_000_000); // 1 MB
-    config.set_initial_max_stream_data_uni(1_000_000); // 1 MB
-    config.set_initial_max_streams_bidi(100);
-    config.set_initial_max_streams_uni(100);
-    config.load_cert_chain_from_pem_file("cert.crt")?;
-    config.load_priv_key_from_pem_file("cert.key")?;
-    config.verify_peer(false);
+    let mut config = create_config(true)?;
 
     loop {
         match socket.recv_from(&mut read_buf) {
@@ -74,7 +58,7 @@ async fn main() -> Result<(), anyhow::Error> {
                     match client.conn.recv(&mut read_buf[..len], recv_info) {
                         Ok(read) => {
                             assert_eq!(read, len);
-                            println!("Получен пакет ({} байт) от {}", read, client_addr);
+                            //    println!("Получен пакет ({} байт) от {}", read, client_addr);
                         }
                         Err(e) => {
                             println!("Ошибка при обработке пакета от {}: {:?}", client_addr, e);
@@ -125,7 +109,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             }
             Err(e) => {
-                if e.kind() == io::ErrorKind::WouldBlock { // TODO why?
+                if e.kind() == io::ErrorKind::WouldBlock {
                     // No data, that;s ok
                 } else {
                     println!("Error: {:?}", e);
@@ -178,15 +162,17 @@ async fn main() -> Result<(), anyhow::Error> {
                         Ok((read, fin)) => {
                             let data = &stream_buf[..read];
                             client.bytes_received += read;
-                            println!(
-                                "Got {} bytes from {} on thread {:?} (fin: {}). total: {} bytes, elapsed {:?}",
-                                data.len(),
-                                client_addr,
-                                stream_id,
-                                fin,
-                                client.bytes_received,
-                                client.first_seen.elapsed(),
-                            );
+                            if client.bytes_received == 30720000 {
+                                println!(
+                                    "Got {} bytes from {} on thread {:?} (fin: {}). total: {} bytes, elapsed {:?}",
+                                    data.len(),
+                                    client_addr,
+                                    stream_id,
+                                    fin,
+                                    client.bytes_received,
+                                    client.first_seen.elapsed(),
+                                );
+                            }
 
                             // Если поток завершен с нашей стороны
                             if fin {

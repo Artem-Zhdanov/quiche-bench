@@ -1,47 +1,31 @@
+use quiche_bench::create_config;
 use ring::rand::{SecureRandom, SystemRandom};
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
-use std::thread;
 use std::time::{Duration, Instant};
 
 // Используем последнюю версию quiche
-use quiche::{Config, ConnectionId, RecvInfo};
+use quiche::{ConnectionId, RecvInfo};
+
+const ESTABLISH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
     let data_to_send = vec![42u8; 300 * 1024];
-    const MAX_MESSAGE_NUM: u32 = 10;
+    const MAX_MESSAGE_NUM: u32 = 100;
 
-    let server_addr: SocketAddr = "127.0.0.1:5000".parse().unwrap();
-    let client_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let max_packet_size = 1350;
+    let server_addr: SocketAddr = "94.156.25.224:5000".parse().unwrap();
+    let client_addr: SocketAddr = "94.156.25.224:0".parse().unwrap();
 
     let socket = UdpSocket::bind(client_addr)?;
     socket.set_nonblocking(true)?;
 
     let rng = SystemRandom::new();
 
-    // Буфер для чтения данных
     let mut read_buf = [0; 65535];
-
-    // Буфер для записи данных
     let mut write_buf = [0; 65535];
 
-    // Конфигурация QUIC клиента
-    let mut config = Config::new(quiche::PROTOCOL_VERSION)?;
-
-    // Настраиваем параметры QUIC соединения
-    config.set_application_protos(&[b"\x05myapp"])?;
-    config.set_max_idle_timeout(30000);
-    config.set_max_recv_udp_payload_size(max_packet_size);
-    config.set_max_send_udp_payload_size(max_packet_size);
-    config.set_initial_max_data(10_000_000); // 10 MB
-    config.set_initial_max_stream_data_bidi_local(1_000_000); // 1 MB
-    config.set_initial_max_stream_data_bidi_remote(1_000_000); // 1 MB
-    config.set_initial_max_stream_data_uni(1_000_000); // 1 MB
-    config.set_initial_max_streams_bidi(100);
-    config.set_initial_max_streams_uni(100);
-    config.verify_peer(false); // Не проверяем сертификат сервера
+    let mut config = create_config(false)?;
 
     let rand_id = {
         let mut rand_id = [0; quiche::MAX_CONN_ID_LEN];
@@ -69,80 +53,66 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut stream_id: Option<u64> = None;
     let mut message_count = 0;
 
-    // Основной цикл клиента
     while !conn.is_closed() {
-        // Проверка таймаута
-        if start.elapsed() > Duration::from_secs(5) && !connection_established {
-            anyhow::bail!("Can't establish connection i 5 seconds");
+        // Check that connection was established during last ESTABLISH_CONNECTION_TIMEOUT
+        if start.elapsed() > ESTABLISH_CONNECTION_TIMEOUT && !connection_established {
+            anyhow::bail!(
+                "Can't establish connection in {:?}",
+                ESTABLISH_CONNECTION_TIMEOUT
+            );
         }
 
         // Here we just reading from socket and push it to Quic conn
         match socket.recv_from(&mut read_buf) {
             Ok((len, from)) => {
                 // Pass data to Quic
-                match conn.recv(
+                if let Err(err) = conn.recv(
                     &mut read_buf[..len],
                     RecvInfo {
                         from,
                         to: socket.local_addr()?,
                     },
                 ) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        println!("Ошибка при получении данных: {:?}", e);
-                    }
+                    println!("Error passing packet to Quic {:?}", err);
                 }
             }
             Err(e) => {
                 if e.kind() == io::ErrorKind::WouldBlock {
-                    println!("WouldBlock: {:?}", e);
+                    // Ok, no data
                 } else {
-                    println!("Ошибка при чтении из сокета: {:?}", e);
+                    println!("Error reading packet from socket: {:?}", e);
                 }
             }
         }
 
         // Read from Quic com and send ALL it has
-        loop {
-            match conn.send(&mut write_buf) {
-                Ok((write, _)) => match socket.send_to(&write_buf[..write], server_addr) {
-                    Ok(sent) => {
-                        assert_eq!(write, sent);
-                    }
-                    Err(e) => {
-                        anyhow::bail!("Ошибка при отправке: {:?}", e);
-                    }
-                },
-                Err(quiche::Error::Done) => {
-                    // Нет данных для отправки
-                    break;
+        // loop {
+        match conn.send(&mut write_buf) {
+            Ok((write, _)) => match socket.send_to(&write_buf[..write], server_addr) {
+                Ok(sent) => {
+                    assert_eq!(write, sent);
                 }
                 Err(e) => {
-                    println!("Ошибка при отправке пакета: {:?}", e);
-                    break;
+                    anyhow::bail!("Error sending packet socket: {:?}", e);
                 }
-            };
-        }
+            },
+            Err(quiche::Error::Done) => {
+                // No data, ok
+                //       break;
+            }
+            Err(e) => {
+                println!("Error passing packet from Quic: {:?}", e);
+                //       break;
+            }
+        };
+        //  }
 
         // Проверяем, установлено ли соединение
         if conn.is_established() && !connection_established {
-            println!("QUIC соединение установлено!");
-            println!("Handshake завершен успешно.");
             connection_established = true;
-
-            // Детали handshake:
-            // 1. Initial пакет: Клиент отправляет Initial пакет, начиная процесс handshake.
-            //    Этот пакет содержит ClientHello с параметрами и криптографическими данными.
-            // 2. Сервер отвечает Initial пакетом с ServerHello, подтверждая параметры.
-            // 3. Сервер отправляет Handshake пакеты с дополнительной криптографической информацией.
-            // 4. Клиент завершает handshake, отправляя свои Handshake пакеты.
-            // 5. После успешного обмена криптографическими данными соединение устанавливается.
-
-            // Открываем двунаправленный поток
-            let stream = 0; // ID первого двунаправленного потока в QUIC
-            stream_id = Some(stream);
-
-            println!("Открыт поток {}", stream);
+            let stream = 2;
+            stream_id = Some(2); //  Client initiated uni unistream
+            println!("Handshake завершен успешно, открыт поток {}", stream);
         }
 
         // Если соединение установлено, отправляем данные
@@ -157,16 +127,10 @@ async fn main() -> Result<(), anyhow::Error> {
                         Ok(written) => {
                             offset += written;
 
-                            println!(
-                                "Отправлено {} байт в поток {} {} {}",
-                                written, stream, total_size, offset
-                            );
-                            if offset == total_size {
-                                println!(
-                                    "=============================All data send to stream # {}",
-                                    stream
-                                );
-                            }
+                            // println!(
+                            //     "Sent  {written} bytes into stream {stream} {total_size} {offset}",
+                            // );
+
                             // Create datagrams
                             match conn.send(&mut write_buf) {
                                 Ok((write, _)) => {
@@ -180,9 +144,7 @@ async fn main() -> Result<(), anyhow::Error> {
                             }
                         }
                         Err(quiche::Error::Done) => {
-                            // Stream has no capacity (full)
-                            tokio::task::yield_now().await;
-
+                            // "Done" means "wait" just wait
                             //++++++ Quic transport part start
                             match socket.recv_from(&mut read_buf) {
                                 Ok((len, from)) => {
@@ -202,16 +164,29 @@ async fn main() -> Result<(), anyhow::Error> {
                                 Err(_) => {}
                             }
 
+                            // Read from Quic com and send ALL it has
+                            //  loop {
                             match conn.send(&mut write_buf) {
                                 Ok((write, _)) => {
-                                    let written =
-                                        socket.send_to(&write_buf[..write], server_addr)?;
-                                    assert_eq!(write, written);
+                                    match socket.send_to(&write_buf[..write], server_addr) {
+                                        Ok(sent) => {
+                                            assert_eq!(write, sent);
+                                        }
+                                        Err(e) => {
+                                            anyhow::bail!("Error sending packet socket: {:?}", e);
+                                        }
+                                    }
                                 }
-                                Err(err) => {
-                                    println!(">>>: {:?}", err);
+                                Err(quiche::Error::Done) => {
+                                    // No data, ok
+                                    //     break;
                                 }
-                            }
+                                Err(e) => {
+                                    println!("Error passing packet from Quic: {:?}", e);
+                                    //  break;
+                                }
+                            };
+                            //   }
                             //++++++ Quic transport part end
                         }
                         Err(e) => {
@@ -221,8 +196,12 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
                 message_count += 1;
             }
+            let stats = conn.stats();
+
+            println!("{:?}", stats);
         } else if connection_established && message_count >= MAX_MESSAGE_NUM && stream_id.is_some()
         {
+
             // // Завершаем поток после отправки всех сообщений
             // let stream = stream_id.unwrap();
 
