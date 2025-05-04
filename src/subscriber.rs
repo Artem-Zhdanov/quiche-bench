@@ -1,16 +1,15 @@
 use anyhow::Result;
 
 use crate::config::BLOCK_SIZE;
-use crate::metrics::{Metrics, OtMetrics};
-use crate::now_ms;
+use crate::metrics::Metrics;
 use crate::quic_config::configure_server;
+use crate::{MAGIC_NUMBER, now_ms};
 use quiche::{ConnectionId, Header, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::collections::HashMap;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 pub struct Client {
@@ -22,7 +21,7 @@ pub struct Client {
 
 pub async fn run(
     metrics: Arc<Metrics>,
-    ot_metrics: Arc<OtMetrics>,
+    ot_metrics: Arc<Metrics>,
     address: String,
     port: u16,
 ) -> Result<()> {
@@ -43,6 +42,9 @@ pub async fn run(
     let mut config = configure_server()?;
 
     let metrics_clone = metrics.clone();
+
+    let mut aggregated_data = Vec::with_capacity(BLOCK_SIZE * 2); // aggregation buffer
+
     loop {
         match socket.recv_from(&mut read_buf) {
             Ok((len, peer_addr)) => {
@@ -157,29 +159,42 @@ pub async fn run(
             }
 
             if client.conn.is_established() {
-                // Get available streams
-                let mut readable = Vec::new();
-                for stream_id in client.conn.readable() {
-                    readable.push(stream_id);
-                }
-
-                for stream_id in readable {
+                // for simplicity and performance we have only one stream per connection in this test
+                if let Some(stream_id) = client.conn.readable().next() {
                     let mut stream_buf = [0; 500 * 1024]; // ZZZ
 
                     match client.conn.stream_recv(stream_id, &mut stream_buf) {
                         Ok((read, _fin)) => {
-                            let data = &stream_buf[..read];
-                            client.bytes_received += read;
+                            if read == 0 {
+                                break; // end of stream
+                            }
+                            aggregated_data.extend_from_slice(&stream_buf[..read]);
 
-                            if client.bytes_received == 30720000 {
-                                println!(
-                                    "Got {} bytes from {} on thread {:?}. total: {} bytes, elapsed {:?}",
-                                    data.len(),
-                                    client_addr,
-                                    stream_id,
-                                    client.bytes_received,
-                                    client.first_seen.elapsed(),
+                            while aggregated_data.len() >= BLOCK_SIZE {
+                                let block =
+                                    aggregated_data.drain(..BLOCK_SIZE).collect::<Vec<u8>>();
+
+                                let magic_bytes = &block[0..8];
+                                let magic_number: u64 = u64::from_be_bytes(magic_bytes.try_into()?);
+
+                                assert_eq!(
+                                    magic_number, MAGIC_NUMBER,
+                                    "Quic guaranties that. Otherwise producer was restarted and Subscriber must be restarted too"
                                 );
+
+                                let timestamp_bytes = &block[8..16];
+                                let sent_timestamp =
+                                    u64::from_be_bytes(timestamp_bytes.try_into()?);
+
+                                let time_now = now_ms();
+                                let latency = time_now - sent_timestamp;
+                                tracing::info!(
+                                    "Latency ms: {} = {} - {}",
+                                    latency,
+                                    time_now,
+                                    sent_timestamp
+                                );
+                                ot_metrics.latency.record(latency, &[]);
                             }
                         }
                         Err(quiche::Error::Done) => {

@@ -1,29 +1,16 @@
 use opentelemetry::metrics::Histogram;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use opentelemetry_sdk::metrics::PeriodicReader;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 use opentelemetry_sdk::runtime::Tokio;
 
-#[derive(Debug, Default)]
 pub struct Metrics {
-    pub bytes: AtomicUsize,
-    pub blocks: AtomicUsize,
-}
-
-impl Metrics {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-pub struct OtMetrics {
     pub latency: Histogram<u64>,
 }
 
-pub fn init_metrics() -> Arc<OtMetrics> {
+pub fn init_metrics() -> Arc<Metrics> {
     // Don't forget to set and export `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` envar.
     unsafe {
         std::env::set_var("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "grpc");
@@ -50,7 +37,7 @@ pub fn init_metrics() -> Arc<OtMetrics> {
     opentelemetry::global::set_meter_provider(meter_provider.clone());
     let meter = &opentelemetry::global::meter("quic");
 
-    let ot_metrics = Arc::new(OtMetrics {
+    let ot_metrics = Arc::new(Metrics {
         latency: meter
             .u64_histogram("quic_latency")
             .with_boundaries(vec![

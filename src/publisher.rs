@@ -1,6 +1,6 @@
 use crate::config::BLOCK_SIZE;
-use crate::now_ms;
 use crate::quic_config::configure_client;
+use crate::{MAGIC_NUMBER, now_ms};
 use anyhow::{Result, bail};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::io;
@@ -13,7 +13,7 @@ use quiche::{ConnectionId, RecvInfo};
 const ESTABLISH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn run(addr: String, port: u16) -> Result<()> {
-    let data_to_send = vec![42u8; BLOCK_SIZE];
+    let mut data_to_send = vec![42u8; BLOCK_SIZE];
     const MAX_MESSAGE_NUM: u32 = 100000;
 
     let rng = SystemRandom::new();
@@ -118,6 +118,10 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
         if connection_established && message_count < MAX_MESSAGE_NUM {
             if let Some(stream) = stream_id {
                 let mut offset = 0;
+
+                data_to_send[0..8].copy_from_slice(&MAGIC_NUMBER.to_be_bytes());
+                data_to_send[8..16].copy_from_slice(&now_ms().to_be_bytes());
+
                 let total_size = data_to_send.len();
 
                 let moment = Instant::now();
@@ -169,10 +173,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                                         // Ok, no data
                                         tokio::task::yield_now().await;
                                     } else {
-                                        tracing::error!(
-                                            "Error reading packet from socket: {:?}",
-                                            e
-                                        );
+                                        tracing::error!("Error reading packet from socket: {e}",);
                                     }
                                 }
                             }
@@ -209,6 +210,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                 let elapsed = moment.elapsed().as_millis() as u64;
                 if elapsed < 330 {
                     //  tokio::time::sleep(Duration::from_millis(330 - elapsed)).await;
+                    tokio::time::sleep(Duration::from_millis(33)).await;
                 } else {
                     tracing::error!("Elapsed time is too long: {} ms", elapsed);
                 }

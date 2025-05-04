@@ -4,6 +4,7 @@ pub mod publisher;
 pub mod quic_config;
 pub mod subscriber;
 
+pub const MAGIC_NUMBER: u64 = 123456789876543210;
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
