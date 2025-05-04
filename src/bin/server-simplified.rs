@@ -117,8 +117,6 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         }
 
-        let mut stale_connections = Vec::new();
-
         for (client_addr, client) in active_connections.iter_mut() {
             // Проверяем необходимость отправки данных
             loop {
@@ -132,7 +130,6 @@ async fn main() -> Result<(), anyhow::Error> {
 
                     Err(e) => {
                         println!("Ошибка при отправке пакета: {:?}", e);
-                        stale_connections.push(client_addr.clone());
                         break;
                     }
                 };
@@ -162,7 +159,7 @@ async fn main() -> Result<(), anyhow::Error> {
                         Ok((read, fin)) => {
                             let data = &stream_buf[..read];
                             client.bytes_received += read;
-                            if client.bytes_received == 30720000 {
+                            if client.bytes_received == 102400 {
                                 println!(
                                     "Got {} bytes from {} on thread {:?} (fin: {}). total: {} bytes, elapsed {:?}",
                                     data.len(),
@@ -188,24 +185,6 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 }
             }
-
-            // Проверяем таймаут соединения
-            if client.last_seen.elapsed() > Duration::from_secs(30) {
-                println!("Соединение с {} истекло", client_addr);
-                stale_connections.push(client_addr.clone());
-            }
-
-            // Проверяем закрытые соединения
-            if client.conn.is_closed() {
-                println!("Соединение с {} закрыто ", client_addr,);
-
-                stale_connections.push(client_addr.clone());
-            }
-        }
-
-        // Удаляем закрытые или истёкшие соединения
-        for client_addr in stale_connections {
-            active_connections.remove(&client_addr);
         }
 
         // tokio::task::yield_now().await;

@@ -1,39 +1,86 @@
-use quiche::Config;
+pub mod config;
+pub mod metrics;
+pub mod publisher;
+pub mod quic_config;
+pub mod subscriber;
 
-const MAX_PACKET_SIZE: usize = 1350;
-const IDLE_TIMEOUT_MS: u64 = 60000;
-const INITIAL_MAX_DATA: u64 = 100_000_000; // 100 MB
-const INITIAL_MAX_STREAM_DATA: u64 = 10_000_000; // 10 MB
-const MAX_DATAGRAM_SIZE: usize = 1350;
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
-pub fn create_config(is_server: bool) -> anyhow::Result<Config> {
-    let mut config = Config::new(quiche::PROTOCOL_VERSION)?;
+// input can be: "5000-5010", "5000", "5000,6000, 7000-7010"
+pub fn ports_string_to_vec(input: &str) -> anyhow::Result<Vec<u16>> {
+    let mut ports = std::collections::BTreeSet::new(); // to keep them sorted and unique
 
-    config.set_application_protos(&[b"\x05myapp"])?;
-    config.set_max_idle_timeout(IDLE_TIMEOUT_MS);
-    config.set_max_recv_udp_payload_size(MAX_PACKET_SIZE);
-    config.set_initial_max_data(INITIAL_MAX_DATA);
-    config.set_initial_max_stream_data_bidi_local(INITIAL_MAX_STREAM_DATA);
-    config.set_initial_max_stream_data_bidi_remote(INITIAL_MAX_STREAM_DATA);
-    config.set_initial_max_stream_data_uni(INITIAL_MAX_STREAM_DATA);
-    config.set_initial_max_streams_bidi(0);
-    config.set_initial_max_streams_uni(1);
-    config.set_ack_delay_exponent(3);
-    config.enable_hystart(false);
-    config.set_max_pacing_rate(4);
-    config.verify_peer(false);
-    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::BBR);
-
-    config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
-
-    //config.enable_packet_coalescing(false);
-
-    // config.set_max_ack_delay(1);
-    // config.enable_pacing(false);
-    if is_server {
-        // config.set_passive(true);
-        config.load_cert_chain_from_pem_file("cert.crt")?;
-        config.load_priv_key_from_pem_file("cert.key")?;
+    for token in input.split(',') {
+        if let Some((start, end)) = token.split_once('-') {
+            let start: u16 = start.trim().parse()?;
+            let end: u16 = end.trim().parse()?;
+            if start > end {
+                return Err(anyhow::anyhow!("Start port {} > end port {}", start, end));
+            }
+            ports.extend(start..=end);
+        } else {
+            let port: u16 = token.trim().parse()?;
+            ports.insert(port);
+        }
     }
-    Ok(config)
+
+    Ok(ports.into_iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ports_string_to_vec;
+
+    #[test]
+    fn test_parse_single_ports() {
+        let result = ports_string_to_vec("5000,5002,5003").unwrap();
+        assert_eq!(result, vec![5000, 5002, 5003]);
+    }
+
+    #[test]
+    fn test_parse_port_ranges() {
+        let result = ports_string_to_vec("5000-5002").unwrap();
+        assert_eq!(result, vec![5000, 5001, 5002]);
+    }
+
+    #[test]
+    fn test_parse_mixed_ports() {
+        let result = ports_string_to_vec("5000,5002,5005-5007").unwrap();
+        assert_eq!(result, vec![5000, 5002, 5005, 5006, 5007]);
+    }
+
+    #[test]
+    fn test_parse_duplicate_and_sorted() {
+        let result = ports_string_to_vec("5002,5000,5002,5001").unwrap();
+        assert_eq!(result, vec![5000, 5001, 5002]);
+    }
+
+    #[test]
+    fn test_parse_with_spaces() {
+        let result = ports_string_to_vec(" 5000 , 5001 - 5002 ").unwrap();
+        assert_eq!(result, vec![5000, 5001, 5002]);
+    }
+
+    #[test]
+    fn test_invalid_port_number() {
+        let err = ports_string_to_vec("not_a_port").unwrap_err();
+        assert!(err.to_string().contains("invalid digit"));
+    }
+
+    #[test]
+    fn test_invalid_range_order() {
+        let err = ports_string_to_vec("5005-5002").unwrap_err();
+        assert!(err.to_string().contains("Start port"));
+    }
+
+    #[test]
+    fn test_empty_string_should_fail() {
+        let result = ports_string_to_vec("");
+        assert!(result.is_err());
+    }
 }

@@ -1,9 +1,16 @@
+use anyhow::Result;
+
+use crate::config::BLOCK_SIZE;
+use crate::metrics::{Metrics, OtMetrics};
+use crate::now_ms;
+use crate::quic_config::configure_server;
 use quiche::{ConnectionId, Header, RecvInfo};
-use quiche_bench::quic_config::create_config;
 use ring::rand::{SecureRandom, SystemRandom};
 use std::collections::HashMap;
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 pub struct Client {
@@ -13,13 +20,11 @@ pub struct Client {
     pub last_seen: Instant,
 }
 
-const SERVER_ADDRESS: &str = "94.156.25.224:5000";
+pub async fn run(metrics: Arc<Metrics>, ot_metrics: Arc<OtMetrics>, port: u16) -> Result<()> {
+    let socket_address = format!("{}:{}", "94.156.25.224", port);
+    tracing::info!("Server started on: {}", socket_address);
 
-#[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
-    println!("Server started on: {}", SERVER_ADDRESS);
-
-    let socket = UdpSocket::bind(SERVER_ADDRESS)?;
+    let socket = UdpSocket::bind(socket_address)?;
     socket.set_nonblocking(true)?;
 
     let rng = SystemRandom::new();
@@ -29,8 +34,9 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut read_buf = [0; 65535];
     let mut write_buf = [0; 65535];
 
-    let mut config = create_config(true)?;
+    let mut config = configure_server()?;
 
+    let metrics_clone = metrics.clone();
     loop {
         match socket.recv_from(&mut read_buf) {
             Ok((len, peer_addr)) => {
@@ -148,9 +154,8 @@ async fn main() -> Result<(), anyhow::Error> {
 
             // Проверяем и обрабатываем входящие потоки с данными
             if client.conn.is_established() {
-                // Получаем ID завершенных потоков с данными
+                // Get available streams
                 let mut readable = Vec::new();
-
                 for stream_id in client.conn.readable() {
                     readable.push(stream_id);
                 }
@@ -174,13 +179,12 @@ async fn main() -> Result<(), anyhow::Error> {
                                 );
                             }
 
-                            // Если поток завершен с нашей стороны
                             if fin {
                                 println!("Поток {} завершен", stream_id);
                             }
                         }
                         Err(quiche::Error::Done) => {
-                            // Нет данных для чтения
+                            // No data, ok
                         }
                         Err(e) => {
                             println!("Ошибка при чтении из потока {}: {:?}", stream_id, e);
@@ -210,4 +214,50 @@ async fn main() -> Result<(), anyhow::Error> {
 
         // tokio::task::yield_now().await;
     }
+
+    // let server_config = configure_server(port)?;
+    // let server = Endpoint::server(server_config)?;
+
+    // let incoming_session = server.accept().await;
+
+    // let session_request = incoming_session.await?;
+
+    // tracing::info!(
+    //     "New session: Authority: '{}', Path: '{}'",
+    //     session_request.authority(),
+    //     session_request.path()
+    // );
+
+    // let connection = session_request.accept().await?;
+
+    // while let Ok(mut stream) = connection.accept_uni().await {
+    //     let metrics = metrics_clone.clone();
+
+    //     let mut buf: Vec<u8> = vec![42; BLOCK_SIZE];
+    //     loop {
+    //         match stream.read_exact(&mut buf).await {
+    //             Ok(_) => {
+    //                 metrics.blocks.fetch_add(1, Ordering::Relaxed);
+    //                 let header_bytes = &buf[0..8];
+
+    //                 let sent_timestamp = u64::from_be_bytes(header_bytes.try_into()?);
+
+    //                 let time_now = now_ms();
+    //                 let latency = time_now - sent_timestamp;
+    //                 tracing::info!(
+    //                     "Latency ms: {} = {} - {}",
+    //                     latency,
+    //                     time_now,
+    //                     sent_timestamp
+    //                 );
+    //                 ot_metrics.latency.record(latency, &[]);
+    //             }
+    //             Err(e) => {
+    //                 tracing::error!("Error reading: {}", e);
+    //                 break;
+    //             }
+    //         }
+    //     }
+    // }
+    Ok(())
 }

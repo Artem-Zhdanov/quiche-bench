@@ -1,0 +1,12 @@
+subscriber:
+
+# We have only one publisher that sends blocks to its subscribers
+publisher:
+  - addr: "94.156.178.64"
+    ports: "5001-5300"
+
+  - addr: "94.156.25.224"
+    ports: "5001-5100"
+
+  - addr: "94.156.25.225"
+    ports: "5001-5100"

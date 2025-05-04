@@ -4,7 +4,27 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1.32.0", features = ["full"] }
 quiche = "0.24.2"
 anyhow = "1.0.98"
 ring = "0.17.14"
+clap = { version = "4.5.37", features = ["derive"] }
+tokio = { version = "1.32.0", features = ["full"] }
+futures-util = "0.3.28"
+bytes = "1.5.0"
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.114"
+serde_yaml = { version = "0.9" }
+shellexpand = { version = "3.1.0", features = ["path"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing = "0.1"
+
+opentelemetry = { version = "0.27", features = ["metrics"] }
+opentelemetry-otlp = { version = "0.27", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false
