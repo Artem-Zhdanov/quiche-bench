@@ -29,12 +29,17 @@ async fn main() -> Result<()> {
     let metrics: Arc<Metrics> = Arc::new(Metrics::new());
 
     // Run subscribers
-    for Subscriber { ports } in config.subscriber {
+    for Subscriber { addr, ports } in config.subscriber {
         for port in ports_string_to_vec(&ports)? {
             let metrics_clone = metrics.clone();
             let ot_metrics_clone = ot_metrics.clone();
+            let addr_clone = addr.clone();
             let _ = tokio::spawn(async move {
-                if let Err(err) = subscriber::run(metrics_clone, ot_metrics_clone, port).await {
+                println!("Running subscribers");
+
+                if let Err(err) =
+                    subscriber::run(metrics_clone, ot_metrics_clone, addr_clone, port).await
+                {
                     tracing::error!("Subscriber error: {}", err);
                 }
             });
@@ -48,6 +53,8 @@ async fn main() -> Result<()> {
         for port in ports_string_to_vec(&ports)? {
             let addr_clone = addr.clone();
             let _ = tokio::spawn(async move {
+                println!("Running publisher");
+
                 if let Err(err) = publisher::run(addr_clone, port).await {
                     tracing::error!("Publisher task failed: {}", err);
                 }
@@ -55,12 +62,12 @@ async fn main() -> Result<()> {
         }
     }
 
-    let metrics_clone = metrics.clone();
-    let _report_handle = tokio::spawn(async {
-        if let Err(e) = run_report(metrics_clone).await {
-            tracing::error!("Report task failed: {}", e);
-        }
-    });
+    // let metrics_clone = metrics.clone();
+    // let _report_handle = tokio::spawn(async {
+    //     if let Err(e) = run_report(metrics_clone).await {
+    //         tracing::error!("Report task failed: {}", e);
+    //     }
+    // });
 
     tokio::signal::ctrl_c().await?;
     Ok(())

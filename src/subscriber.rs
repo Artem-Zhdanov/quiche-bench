@@ -19,12 +19,20 @@ pub struct Client {
     pub first_seen: Instant,
     pub last_seen: Instant,
 }
+const SERVER_ADDRESS: &str = "94.156.25.224:5000";
 
-pub async fn run(metrics: Arc<Metrics>, ot_metrics: Arc<OtMetrics>, port: u16) -> Result<()> {
-    let socket_address = format!("{}:{}", "94.156.25.224", port);
-    tracing::info!("Server started on: {}", socket_address);
+pub async fn run(
+    metrics: Arc<Metrics>,
+    ot_metrics: Arc<OtMetrics>,
+    address: String,
+    port: u16,
+) -> Result<()> {
+    //   let socket_address = format!("{}:{}", address, port);
+    let socket = UdpSocket::bind(SERVER_ADDRESS)?;
 
-    let socket = UdpSocket::bind(socket_address)?;
+    // tracing::info!("Server started on: {}", socket_address);
+
+    // let socket = UdpSocket::bind(socket_address)?;
     socket.set_nonblocking(true)?;
 
     let rng = SystemRandom::new();
@@ -64,7 +72,6 @@ pub async fn run(metrics: Arc<Metrics>, ot_metrics: Arc<OtMetrics>, port: u16) -
                     match client.conn.recv(&mut read_buf[..len], recv_info) {
                         Ok(read) => {
                             assert_eq!(read, len);
-                            //    println!("Получен пакет ({} байт) от {}", read, client_addr);
                         }
                         Err(e) => {
                             println!("Ошибка при обработке пакета от {}: {:?}", client_addr, e);
@@ -84,7 +91,7 @@ pub async fn run(metrics: Arc<Metrics>, ot_metrics: Arc<OtMetrics>, port: u16) -
                         match quiche::accept(&scid, None, recv_info.to, peer_addr, &mut config) {
                             Ok(c) => c,
                             Err(e) => {
-                                println!("Ошибка при создании соединения: {:?}", e);
+                                println!("Can't create a connection: {:?}", e);
                                 continue;
                             }
                         };
@@ -103,11 +110,11 @@ pub async fn run(metrics: Arc<Metrics>, ot_metrics: Arc<OtMetrics>, port: u16) -
                     let client = active_connections.get_mut(&client_addr).unwrap();
                     match client.conn.recv(&mut read_buf[..len], recv_info) {
                         Ok(read) => {
-                            println!("Обработано начальное рукопожатие от {}", client_addr);
+                            println!("Handshake start handled from {}", client_addr);
                             assert_eq!(read, len);
                         }
                         Err(e) => {
-                            println!("Ошибка при обработке начального пакета: {:?}", e);
+                            println!("Handshake error: {:?}", e);
                             active_connections.remove(&client_addr);
                             continue;
                         }
@@ -126,7 +133,6 @@ pub async fn run(metrics: Arc<Metrics>, ot_metrics: Arc<OtMetrics>, port: u16) -
         let mut stale_connections = Vec::new();
 
         for (client_addr, client) in active_connections.iter_mut() {
-            // Проверяем необходимость отправки данных
             loop {
                 let write = match client.conn.send(&mut write_buf) {
                     Ok((write, _)) => write,
@@ -137,19 +143,19 @@ pub async fn run(metrics: Arc<Metrics>, ot_metrics: Arc<OtMetrics>, port: u16) -
                     }
 
                     Err(e) => {
-                        println!("Ошибка при отправке пакета: {:?}", e);
+                        println!("Error to create quic packet: {:?}", e);
                         stale_connections.push(client_addr.clone());
                         break;
                     }
                 };
 
-                // Отправляем данные клиенту
                 if let Err(err) = socket.send_to(
                     &write_buf[..write],
                     client_addr.parse::<SocketAddr>().unwrap(),
                 ) {
-                    println!("Ошибка при отправке: {:?}", err);
+                    anyhow::bail!("Error: {:?}", err);
                 }
+                println!("Sent!");
             }
 
             // Проверяем и обрабатываем входящие потоки с данными
@@ -164,30 +170,25 @@ pub async fn run(metrics: Arc<Metrics>, ot_metrics: Arc<OtMetrics>, port: u16) -
                     let mut stream_buf = [0; 500 * 1024];
 
                     match client.conn.stream_recv(stream_id, &mut stream_buf) {
-                        Ok((read, fin)) => {
+                        Ok((read, _fin)) => {
                             let data = &stream_buf[..read];
                             client.bytes_received += read;
                             if client.bytes_received == 30720000 {
                                 println!(
-                                    "Got {} bytes from {} on thread {:?} (fin: {}). total: {} bytes, elapsed {:?}",
+                                    "Got {} bytes from {} on thread {:?}. total: {} bytes, elapsed {:?}",
                                     data.len(),
                                     client_addr,
                                     stream_id,
-                                    fin,
                                     client.bytes_received,
                                     client.first_seen.elapsed(),
                                 );
-                            }
-
-                            if fin {
-                                println!("Поток {} завершен", stream_id);
                             }
                         }
                         Err(quiche::Error::Done) => {
                             // No data, ok
                         }
                         Err(e) => {
-                            println!("Ошибка при чтении из потока {}: {:?}", stream_id, e);
+                            anyhow::bail!("Error reading from stream {}: {:?}", stream_id, e);
                         }
                     }
                 }
@@ -195,69 +196,65 @@ pub async fn run(metrics: Arc<Metrics>, ot_metrics: Arc<OtMetrics>, port: u16) -
 
             // Проверяем таймаут соединения
             if client.last_seen.elapsed() > Duration::from_secs(30) {
-                println!("Соединение с {} истекло", client_addr);
+                tracing::info!("Connection {} is expired", client_addr);
                 stale_connections.push(client_addr.clone());
             }
 
-            // Проверяем закрытые соединения
             if client.conn.is_closed() {
-                println!("Соединение с {} закрыто ", client_addr,);
-
+                tracing::info!("Connection {} is closed", client_addr);
                 stale_connections.push(client_addr.clone());
             }
         }
-
-        // Удаляем закрытые или истёкшие соединения
+        // Clean up
         for client_addr in stale_connections {
             active_connections.remove(&client_addr);
         }
-
+        tokio::time::sleep(Duration::from_millis(10)).await;
         // tokio::task::yield_now().await;
     }
-
-    // let server_config = configure_server(port)?;
-    // let server = Endpoint::server(server_config)?;
-
-    // let incoming_session = server.accept().await;
-
-    // let session_request = incoming_session.await?;
-
-    // tracing::info!(
-    //     "New session: Authority: '{}', Path: '{}'",
-    //     session_request.authority(),
-    //     session_request.path()
-    // );
-
-    // let connection = session_request.accept().await?;
-
-    // while let Ok(mut stream) = connection.accept_uni().await {
-    //     let metrics = metrics_clone.clone();
-
-    //     let mut buf: Vec<u8> = vec![42; BLOCK_SIZE];
-    //     loop {
-    //         match stream.read_exact(&mut buf).await {
-    //             Ok(_) => {
-    //                 metrics.blocks.fetch_add(1, Ordering::Relaxed);
-    //                 let header_bytes = &buf[0..8];
-
-    //                 let sent_timestamp = u64::from_be_bytes(header_bytes.try_into()?);
-
-    //                 let time_now = now_ms();
-    //                 let latency = time_now - sent_timestamp;
-    //                 tracing::info!(
-    //                     "Latency ms: {} = {} - {}",
-    //                     latency,
-    //                     time_now,
-    //                     sent_timestamp
-    //                 );
-    //                 ot_metrics.latency.record(latency, &[]);
-    //             }
-    //             Err(e) => {
-    //                 tracing::error!("Error reading: {}", e);
-    //                 break;
-    //             }
-    //         }
-    //     }
-    // }
-    Ok(())
 }
+
+// let server_config = configure_server(port)?;
+// let server = Endpoint::server(server_config)?;
+
+// let incoming_session = server.accept().await;
+
+// let session_request = incoming_session.await?;
+
+// tracing::info!(
+//     "New session: Authority: '{}', Path: '{}'",
+//     session_request.authority(),
+//     session_request.path()
+// );
+
+// let connection = session_request.accept().await?;
+
+// while let Ok(mut stream) = connection.accept_uni().await {
+//     let metrics = metrics_clone.clone();
+
+//     let mut buf: Vec<u8> = vec![42; BLOCK_SIZE];
+//     loop {
+//         match stream.read_exact(&mut buf).await {
+//             Ok(_) => {
+//                 metrics.blocks.fetch_add(1, Ordering::Relaxed);
+//                 let header_bytes = &buf[0..8];
+
+//                 let sent_timestamp = u64::from_be_bytes(header_bytes.try_into()?);
+
+//                 let time_now = now_ms();
+//                 let latency = time_now - sent_timestamp;
+//                 tracing::info!(
+//                     "Latency ms: {} = {} - {}",
+//                     latency,
+//                     time_now,
+//                     sent_timestamp
+//                 );
+//                 ot_metrics.latency.record(latency, &[]);
+//             }
+//             Err(e) => {
+//                 tracing::error!("Error reading: {}", e);
+//                 break;
+//             }
+//         }
+//     }
+// }

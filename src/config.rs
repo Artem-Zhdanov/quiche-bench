@@ -1,5 +1,5 @@
-use clap::{arg, Parser};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use clap::{Parser, arg};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 
 pub const BLOCK_SIZE: usize = 300 * 1024;
@@ -12,6 +12,7 @@ pub struct Config {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Subscriber {
+    pub addr: String,
     pub ports: String,
 }
 

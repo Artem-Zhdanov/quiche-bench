@@ -58,7 +58,6 @@ async fn main() -> Result<(), anyhow::Error> {
                     match client.conn.recv(&mut read_buf[..len], recv_info) {
                         Ok(read) => {
                             assert_eq!(read, len);
-                            //    println!("Получен пакет ({} байт) от {}", read, client_addr);
                         }
                         Err(e) => {
                             println!("Ошибка при обработке пакета от {}: {:?}", client_addr, e);
@@ -120,7 +119,6 @@ async fn main() -> Result<(), anyhow::Error> {
         let mut stale_connections = Vec::new();
 
         for (client_addr, client) in active_connections.iter_mut() {
-            // Проверяем необходимость отправки данных
             loop {
                 let write = match client.conn.send(&mut write_buf) {
                     Ok((write, _)) => write,
@@ -137,7 +135,6 @@ async fn main() -> Result<(), anyhow::Error> {
                     }
                 };
 
-                // Отправляем данные клиенту
                 if let Err(err) = socket.send_to(
                     &write_buf[..write],
                     client_addr.parse::<SocketAddr>().unwrap(),

@@ -1,26 +1,20 @@
-use anyhow::Result;
-use std::time::Duration;
-use std::time::Instant;
-use tokio::io::AsyncWriteExt;
-
 use crate::config::BLOCK_SIZE;
 use crate::now_ms;
 use crate::quic_config::configure_client;
+use anyhow::Result;
 use ring::rand::{SecureRandom, SystemRandom};
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
+use std::time::Duration;
+use std::time::Instant;
 
-// Используем последнюю версию quiche
 use quiche::{ConnectionId, RecvInfo};
 
 const ESTABLISH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn run(addr: String, port: u16) -> Result<()> {
-    let data_to_send = vec![42u8; 300 * 1024];
+    let data_to_send = vec![42u8; BLOCK_SIZE];
     const MAX_MESSAGE_NUM: u32 = 100;
-
-    let socket = UdpSocket::bind(format!("{}:{}", addr, 0))?;
-    socket.set_nonblocking(true)?;
 
     let rng = SystemRandom::new();
 
@@ -36,7 +30,13 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
     };
     let scid = ConnectionId::from_ref(&rand_id);
 
-    let peer: SocketAddr = format!("{}:{}", addr, port).parse().unwrap(); // Add https?
+    // let peer: SocketAddr = format!("{}:{}", addr, port).parse().unwrap();
+    // let socket = UdpSocket::bind(format!("{}:{}", addr, 0))?;
+
+    let peer: SocketAddr = "94.156.25.224:5000".parse().unwrap();
+    let socket = UdpSocket::bind("94.156.25.224:0")?;
+
+    socket.set_nonblocking(true)?;
     let mut conn = quiche::connect(None, &scid, socket.local_addr()?, peer, &mut config)?;
 
     // Prepare Quic datagram in the buffer for sending and start handshake
@@ -76,7 +76,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                         to: socket.local_addr()?,
                     },
                 ) {
-                    println!("Error passing packet to Quic {:?}", err);
+                    println!("Error 1 passing packet to Quic {:?}", err);
                 }
             }
             Err(e) => {
@@ -104,7 +104,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                 //       break;
             }
             Err(e) => {
-                println!("Error passing packet from Quic: {:?}", e);
+                tracing::error!("Error 2 passing packet from Quic: {:?}", e);
                 //       break;
             }
         };
@@ -114,9 +114,10 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
             connection_established = true;
             let stream = 2;
             stream_id = Some(2); //  Client initiated uni unistream
-            println!("Handshake завершен успешно, открыт поток {}", stream);
+            tracing::info!("Handshake completed, open stream #{}", stream);
         }
 
+        // Main send messages loop
         if connection_established && message_count < MAX_MESSAGE_NUM {
             if let Some(stream) = stream_id {
                 let mut offset = 0;
@@ -130,9 +131,9 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                         Ok(written) => {
                             offset += written;
 
-                            // println!(
-                            //     "Sent  {written} bytes into stream {stream} {total_size} {offset}",
-                            // );
+                            println!(
+                                "Sent  {written} bytes into stream {stream} {total_size} {offset}",
+                            );
 
                             // Create datagrams
                             match conn.send(&mut write_buf) {
@@ -142,7 +143,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                                 }
                                 Err(quiche::Error::Done) => {}
                                 Err(e) => {
-                                    println!("Ошибка при создании пакета: {:?}", e);
+                                    println!("Error to create quic packet: {:?}", e);
                                 }
                             }
                         }
@@ -160,11 +161,17 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                                     ) {
                                         Ok(_) => {}
                                         Err(e) => {
-                                            println!("Ошибка при получении данных: {:?}", e);
+                                            anyhow::bail!("Error reading from quic conn: {:?}", e);
                                         }
                                     }
                                 }
-                                Err(_) => {}
+                                Err(e) => {
+                                    if e.kind() == io::ErrorKind::WouldBlock {
+                                        // Ok, no data
+                                    } else {
+                                        println!("Error reading packet from socket: {:?}", e);
+                                    }
+                                }
                             }
 
                             // Read from Quic com and send ALL it has
@@ -180,18 +187,17 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                                 },
                                 Err(quiche::Error::Done) => {
                                     // No data, ok
-                                    //     break;
+                                    //  break;
                                 }
                                 Err(e) => {
-                                    println!("Error passing packet from Quic: {:?}", e);
-                                    //  break;
+                                    anyhow::bail!("Error 3 passing packet from Quic: {:?}", e);
                                 }
                             };
                             //   }
                             //++++++ Quic transport part end
                         }
                         Err(e) => {
-                            println!("Ошибка при отправке данных в поток: {:?}", e);
+                            println!("Error to send data to stream: {:?}", e);
                         }
                     }
                 }
@@ -204,37 +210,14 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                 } else {
                     tracing::error!("Elapsed time is too long: {} ms", elapsed);
                 }
+                println!("next");
             }
             let stats = conn.stats();
 
             println!("{:?}", stats);
-        } else if connection_established && message_count >= MAX_MESSAGE_NUM && stream_id.is_some()
-        {
-
-            // // Close connection
-            // let stream = stream_id.unwrap();
-
-            // println!("ALL MESSAGES SENT");
-
-            // tokio::time::sleep(Duration::from_secs(600)).await;
-
-            // match conn.stream_send(stream, b"", true) {
-            //     Ok(_) => {
-            //         println!("Поток {} завершен", stream);
-            //         stream_id = None;
-            //     }
-            //     Err(e) => {
-            //         println!("Ошибка при завершении потока: {:?}", e);
-            //     }
-            // }
-
-            // // Начинаем закрытие соединения
-            // conn.close(true, 0, b"Closing connection")?;
-            // println!("Закрытие соединения...");
         }
-
-        // Небольшая задержка, чтобы не нагружать процессор
-        // thread::sleep(Duration::from_millis(10));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // tokio::task::yield_now().await
     }
 
     println!("Соединение закрыто");
