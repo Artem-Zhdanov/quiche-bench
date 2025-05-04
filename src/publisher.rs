@@ -14,7 +14,7 @@ const ESTABLISH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn run(addr: String, port: u16) -> Result<()> {
     let data_to_send = vec![42u8; BLOCK_SIZE];
-    const MAX_MESSAGE_NUM: u32 = 100;
+    const MAX_MESSAGE_NUM: u32 = 100000;
 
     let rng = SystemRandom::new();
 
@@ -78,6 +78,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
             }
             Err(e) => {
                 if e.kind() == io::ErrorKind::WouldBlock {
+                    tokio::task::yield_now().await;
                     // Ok, no data
                 } else {
                     tracing::error!("Error reading packet from socket: {:?}", e);
@@ -127,9 +128,9 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                         Ok(written) => {
                             offset += written;
 
-                            tracing::info!(
-                                "Sent  {written} bytes into stream {stream} {total_size} {offset}",
-                            );
+                            // tracing::info!(
+                            //     "Sent  {written} bytes into stream {stream} {total_size} {offset}",
+                            // );
 
                             // Create datagrams
                             match conn.send(&mut write_buf) {
@@ -166,6 +167,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                                 Err(e) => {
                                     if e.kind() == io::ErrorKind::WouldBlock {
                                         // Ok, no data
+                                        tokio::task::yield_now().await;
                                     } else {
                                         tracing::error!(
                                             "Error reading packet from socket: {:?}",
@@ -206,16 +208,17 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
 
                 let elapsed = moment.elapsed().as_millis() as u64;
                 if elapsed < 330 {
-                    tokio::time::sleep(Duration::from_millis(330 - elapsed)).await;
+                    //  tokio::time::sleep(Duration::from_millis(330 - elapsed)).await;
                 } else {
                     tracing::error!("Elapsed time is too long: {} ms", elapsed);
                 }
+                tracing::info!("{message_count}");
             }
-            let stats = conn.stats();
+            tokio::task::yield_now().await;
 
-            tracing::info!("{:?}", stats);
+            // let stats = conn.stats();
+            // tracing::info!("{:?}", stats);
         }
-        tokio::task::yield_now().await
     }
     tracing::info!("Connection closed");
 
