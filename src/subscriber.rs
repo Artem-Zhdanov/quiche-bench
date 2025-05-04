@@ -19,7 +19,6 @@ pub struct Client {
     pub first_seen: Instant,
     pub last_seen: Instant,
 }
-const SERVER_ADDRESS: &str = "94.156.25.224:5000";
 
 pub async fn run(
     metrics: Arc<Metrics>,
@@ -27,12 +26,11 @@ pub async fn run(
     address: String,
     port: u16,
 ) -> Result<()> {
-    //   let socket_address = format!("{}:{}", address, port);
-    let socket = UdpSocket::bind(SERVER_ADDRESS)?;
+    let socket_address = format!("{}:{}", address, port);
 
-    // tracing::info!("Server started on: {}", socket_address);
+    tracing::info!("Server started on: {}", socket_address);
 
-    // let socket = UdpSocket::bind(socket_address)?;
+    let socket = UdpSocket::bind(socket_address)?;
     socket.set_nonblocking(true)?;
 
     let rng = SystemRandom::new();
@@ -57,7 +55,7 @@ pub async fn run(
                 {
                     Ok(h) => h,
                     Err(e) => {
-                        eprintln!("Can't parse header: {:?}", e);
+                        tracing::error!("Can't parse header: {:?}", e);
                         continue;
                     }
                 };
@@ -74,12 +72,12 @@ pub async fn run(
                             assert_eq!(read, len);
                         }
                         Err(e) => {
-                            println!("Ошибка при обработке пакета от {}: {:?}", client_addr, e);
+                            tracing::error!("Ошибка при обработке пакета от {client_addr}: {e}",);
                             continue;
                         }
                     }
                 } else if header.ty == quiche::Type::Initial {
-                    println!("New connection {}", client_addr);
+                    tracing::info!("New connection {}", client_addr);
                     let rand_id = {
                         let mut rand_id = [0; quiche::MAX_CONN_ID_LEN];
                         rng.fill(&mut rand_id).unwrap();
@@ -91,7 +89,7 @@ pub async fn run(
                         match quiche::accept(&scid, None, recv_info.to, peer_addr, &mut config) {
                             Ok(c) => c,
                             Err(e) => {
-                                println!("Can't create a connection: {:?}", e);
+                                tracing::error!("Can't create new connection: {:?}", e);
                                 continue;
                             }
                         };
@@ -106,15 +104,15 @@ pub async fn run(
                         },
                     );
 
-                    // Обрабатываем первый пакет
+                    // First packet
                     let client = active_connections.get_mut(&client_addr).unwrap();
                     match client.conn.recv(&mut read_buf[..len], recv_info) {
                         Ok(read) => {
-                            println!("Handshake start handled from {}", client_addr);
+                            tracing::info!("Handshake start handled from {}", client_addr);
                             assert_eq!(read, len);
                         }
                         Err(e) => {
-                            println!("Handshake error: {:?}", e);
+                            tracing::error!("Handshake error: {:?}", e);
                             active_connections.remove(&client_addr);
                             continue;
                         }
@@ -125,7 +123,7 @@ pub async fn run(
                 if e.kind() == io::ErrorKind::WouldBlock {
                     // No data, that;s ok
                 } else {
-                    println!("Error: {:?}", e);
+                    tracing::error!("Error: {:?}", e);
                 }
             }
         }
@@ -143,7 +141,7 @@ pub async fn run(
                     }
 
                     Err(e) => {
-                        println!("Error to create quic packet: {:?}", e);
+                        tracing::error!("Error to create quic packet: {:?}", e);
                         stale_connections.push(client_addr.clone());
                         break;
                     }
@@ -153,12 +151,11 @@ pub async fn run(
                     &write_buf[..write],
                     client_addr.parse::<SocketAddr>().unwrap(),
                 ) {
-                    anyhow::bail!("Error: {:?}", err);
+                    // It is not a big deal that we failed sending a datagram. this is Quic, it has delivery guaranties.
+                    tracing::error!("Error: {:?}", err);
                 }
-                println!("Sent!");
             }
 
-            // Проверяем и обрабатываем входящие потоки с данными
             if client.conn.is_established() {
                 // Get available streams
                 let mut readable = Vec::new();
@@ -167,12 +164,13 @@ pub async fn run(
                 }
 
                 for stream_id in readable {
-                    let mut stream_buf = [0; 500 * 1024];
+                    let mut stream_buf = [0; 500 * 1024]; // ZZZ
 
                     match client.conn.stream_recv(stream_id, &mut stream_buf) {
                         Ok((read, _fin)) => {
                             let data = &stream_buf[..read];
                             client.bytes_received += read;
+
                             if client.bytes_received == 30720000 {
                                 println!(
                                     "Got {} bytes from {} on thread {:?}. total: {} bytes, elapsed {:?}",
@@ -186,22 +184,23 @@ pub async fn run(
                         }
                         Err(quiche::Error::Done) => {
                             // No data, ok
+                            tokio::task::yield_now().await;
                         }
                         Err(e) => {
-                            anyhow::bail!("Error reading from stream {}: {:?}", stream_id, e);
+                            // It is not a big deal that we failed sending a datagram. this is Quic, it has delivery guaranties.
+                            tracing::error!("Errorreading from stream {}: {:?}", stream_id, e);
                         }
                     }
                 }
             }
 
-            // Проверяем таймаут соединения
             if client.last_seen.elapsed() > Duration::from_secs(30) {
-                tracing::info!("Connection {} is expired", client_addr);
+                tracing::info!("Connection with {} is expired", client_addr);
                 stale_connections.push(client_addr.clone());
             }
 
             if client.conn.is_closed() {
-                tracing::info!("Connection {} is closed", client_addr);
+                tracing::info!("Connection with {} is closed", client_addr);
                 stale_connections.push(client_addr.clone());
             }
         }
@@ -209,52 +208,7 @@ pub async fn run(
         for client_addr in stale_connections {
             active_connections.remove(&client_addr);
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        // tokio::task::yield_now().await;
+        // tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::task::yield_now().await;
     }
 }
-
-// let server_config = configure_server(port)?;
-// let server = Endpoint::server(server_config)?;
-
-// let incoming_session = server.accept().await;
-
-// let session_request = incoming_session.await?;
-
-// tracing::info!(
-//     "New session: Authority: '{}', Path: '{}'",
-//     session_request.authority(),
-//     session_request.path()
-// );
-
-// let connection = session_request.accept().await?;
-
-// while let Ok(mut stream) = connection.accept_uni().await {
-//     let metrics = metrics_clone.clone();
-
-//     let mut buf: Vec<u8> = vec![42; BLOCK_SIZE];
-//     loop {
-//         match stream.read_exact(&mut buf).await {
-//             Ok(_) => {
-//                 metrics.blocks.fetch_add(1, Ordering::Relaxed);
-//                 let header_bytes = &buf[0..8];
-
-//                 let sent_timestamp = u64::from_be_bytes(header_bytes.try_into()?);
-
-//                 let time_now = now_ms();
-//                 let latency = time_now - sent_timestamp;
-//                 tracing::info!(
-//                     "Latency ms: {} = {} - {}",
-//                     latency,
-//                     time_now,
-//                     sent_timestamp
-//                 );
-//                 ot_metrics.latency.record(latency, &[]);
-//             }
-//             Err(e) => {
-//                 tracing::error!("Error reading: {}", e);
-//                 break;
-//             }
-//         }
-//     }
-// }

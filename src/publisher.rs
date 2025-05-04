@@ -1,7 +1,7 @@
 use crate::config::BLOCK_SIZE;
 use crate::now_ms;
 use crate::quic_config::configure_client;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
@@ -30,11 +30,8 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
     };
     let scid = ConnectionId::from_ref(&rand_id);
 
-    // let peer: SocketAddr = format!("{}:{}", addr, port).parse().unwrap();
-    // let socket = UdpSocket::bind(format!("{}:{}", addr, 0))?;
-
-    let peer: SocketAddr = "94.156.25.224:5000".parse().unwrap();
-    let socket = UdpSocket::bind("94.156.25.224:0")?;
+    let peer: SocketAddr = format!("{}:{}", addr, port).parse().unwrap();
+    let socket = UdpSocket::bind(format!("{}:{}", addr, 0))?;
 
     socket.set_nonblocking(true)?;
     let mut conn = quiche::connect(None, &scid, socket.local_addr()?, peer, &mut config)?;
@@ -42,7 +39,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
     // Prepare Quic datagram in the buffer for sending and start handshake
     match conn.send(&mut write_buf) {
         Ok((write, _)) => {
-            println!("Start handshake...");
+            tracing::info!("Start handshake...");
             socket.send_to(&write_buf[..write], peer)?;
         }
         Err(err) => {
@@ -76,14 +73,14 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                         to: socket.local_addr()?,
                     },
                 ) {
-                    println!("Error 1 passing packet to Quic {:?}", err);
+                    bail!("Error passing packet to Quic {:?}", err);
                 }
             }
             Err(e) => {
                 if e.kind() == io::ErrorKind::WouldBlock {
                     // Ok, no data
                 } else {
-                    println!("Error reading packet from socket: {:?}", e);
+                    tracing::error!("Error reading packet from socket: {:?}", e);
                 }
             }
         }
@@ -104,7 +101,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                 //       break;
             }
             Err(e) => {
-                tracing::error!("Error 2 passing packet from Quic: {:?}", e);
+                bail!("Error passing packet from Quic: {:?}", e);
                 //       break;
             }
         };
@@ -112,12 +109,11 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
 
         if conn.is_established() && !connection_established {
             connection_established = true;
-            let stream = 2;
             stream_id = Some(2); //  Client initiated uni unistream
-            tracing::info!("Handshake completed, open stream #{}", stream);
+            tracing::info!("Handshake completed, open stream #{}", stream_id.unwrap());
         }
 
-        // Main send messages loop
+        // Main send messages loop. Publisher spin here
         if connection_established && message_count < MAX_MESSAGE_NUM {
             if let Some(stream) = stream_id {
                 let mut offset = 0;
@@ -131,7 +127,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                         Ok(written) => {
                             offset += written;
 
-                            println!(
+                            tracing::info!(
                                 "Sent  {written} bytes into stream {stream} {total_size} {offset}",
                             );
 
@@ -141,9 +137,11 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                                     // assert_eq!(written, write);
                                     socket.send_to(&write_buf[..write], peer)?;
                                 }
-                                Err(quiche::Error::Done) => {}
+                                Err(quiche::Error::Done) => {
+                                    // Ok. There is no more work to do.
+                                }
                                 Err(e) => {
-                                    println!("Error to create quic packet: {:?}", e);
+                                    bail!("Error to create quic packet: {:?}", e);
                                 }
                             }
                         }
@@ -169,12 +167,15 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                                     if e.kind() == io::ErrorKind::WouldBlock {
                                         // Ok, no data
                                     } else {
-                                        println!("Error reading packet from socket: {:?}", e);
+                                        tracing::error!(
+                                            "Error reading packet from socket: {:?}",
+                                            e
+                                        );
                                     }
                                 }
                             }
 
-                            // Read from Quic com and send ALL it has
+                            //+++ Read from Quic com and send ALL it has
                             //  loop {
                             match conn.send(&mut write_buf) {
                                 Ok((write, _)) => match socket.send_to(&write_buf[..write], peer) {
@@ -190,14 +191,14 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                                     //  break;
                                 }
                                 Err(e) => {
-                                    anyhow::bail!("Error 3 passing packet from Quic: {:?}", e);
+                                    anyhow::bail!("Error passing packet from Quic: {:?}", e);
                                 }
                             };
                             //   }
-                            //++++++ Quic transport part end
+                            //---
                         }
                         Err(e) => {
-                            println!("Error to send data to stream: {:?}", e);
+                            bail!("Error to send data to stream: {:?}", e);
                         }
                     }
                 }
@@ -206,53 +207,17 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                 let elapsed = moment.elapsed().as_millis() as u64;
                 if elapsed < 330 {
                     tokio::time::sleep(Duration::from_millis(330 - elapsed)).await;
-                    //tokio::task::yield_now().await;
                 } else {
                     tracing::error!("Elapsed time is too long: {} ms", elapsed);
                 }
-                println!("next");
             }
             let stats = conn.stats();
 
-            println!("{:?}", stats);
+            tracing::info!("{:?}", stats);
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        // tokio::task::yield_now().await
+        tokio::task::yield_now().await
     }
-
-    println!("Соединение закрыто");
+    tracing::info!("Connection closed");
 
     Ok(())
-
-    // let config = configure_client()?;
-    // let url = format!("https://{}:{}", addr, port);
-    // let connection = Endpoint::client(config)?.connect(url).await?;
-
-    // let mut data = vec![42u8; BLOCK_SIZE];
-    // let mut stream = connection.open_uni().await?.await?;
-
-    // loop {
-    //     let moment = Instant::now();
-
-    //     data[0..8].copy_from_slice(&now_ms().to_be_bytes());
-
-    //     match stream.write_all(&data).await {
-    //         Ok(_) => {
-    //             if let Err(e) = stream.flush().await {
-    //                 tracing::error!("Error closing stream: {}", e);
-    //             }
-    //         }
-    //         Err(e) => {
-    //             tracing::error!("Error send data: {}", e);
-    //             anyhow::bail!(e);
-    //         }
-    //     }
-    //     let elapsed = moment.elapsed().as_millis() as u64;
-    //     if elapsed < 330 {
-    //     //    tokio::time::sleep(Duration::from_millis(330 - elapsed)).await;
-    //      tokio::task::yield_now().await;
-    //     } else {
-    //         tracing::error!("Elapsed time is too long: {} ms", elapsed);
-    //     }
-    // }
 }
