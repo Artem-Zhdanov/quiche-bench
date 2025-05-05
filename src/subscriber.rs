@@ -2,10 +2,10 @@ use anyhow::Result;
 use quiche::{ConnectionId, Header, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::{io, sync::Arc, time::Duration};
-use tokio::{
-    net::UdpSocket,
-    time::{Instant, sleep_until},
-};
+use tokio::time::{Instant, sleep_until};
+
+use std::net::UdpSocket as StdUdpSocket;
+use tokio::net::UdpSocket as TokioUdpSocket;
 
 use crate::{
     MAGIC_NUMBER, config::BLOCK_SIZE, flush_send, metrics::Metrics, now_ms,
@@ -13,7 +13,10 @@ use crate::{
 };
 
 pub async fn run(ot_metrics: Arc<Metrics>, address: String, port: u16) -> Result<()> {
-    let socket = UdpSocket::bind(format!("{address}:{port}")).await?;
+    let std_sock = StdUdpSocket::bind(format!("{address}:{port}"))?;
+    std_sock.set_nonblocking(true)?;
+
+    let socket = TokioUdpSocket::from_std(std_sock)?;
     tracing::info!("Server started on: {address}:{port}");
 
     let mut config = configure_server()?;

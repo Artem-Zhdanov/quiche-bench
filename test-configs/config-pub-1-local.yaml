@@ -5,4 +5,4 @@ subscriber:
 # We have only one publisher that sends blocks to its subscribers
 publisher:
   - addr: "94.156.25.224"
-    ports: "5000"
+    ports: "5000-5150"

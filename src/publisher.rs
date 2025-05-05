@@ -6,8 +6,9 @@ use quiche::{ConnectionId, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::io;
 use std::net::SocketAddr;
+use std::net::UdpSocket as StdUdpSocket;
 use std::time::Duration;
-use tokio::net::UdpSocket;
+use tokio::net::UdpSocket as TokioUdpSocket;
 use tokio::time::{Instant, sleep_until};
 
 const ESTABLISH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -31,8 +32,11 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
     let scid = ConnectionId::from_ref(&rand_id);
 
     let peer: SocketAddr = format!("{}:{}", addr, port).parse().unwrap();
-    let socket = UdpSocket::bind(format!("{}:{}", addr, 0)).await?;
-    // socket.set_nonblocking(true)?;
+
+    let std_socket = StdUdpSocket::bind(format!("{}:{}", addr, 0))?;
+
+    std_socket.set_nonblocking(true)?;
+    let socket = TokioUdpSocket::from_std(std_socket)?;
 
     let mut conn = quiche::connect(None, &scid, socket.local_addr()?, peer, &mut config)?;
     flush_send!(conn, socket, write_buf, peer);
