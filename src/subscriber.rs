@@ -4,13 +4,14 @@ use crate::config::BLOCK_SIZE;
 use crate::metrics::Metrics;
 use crate::quic_config::configure_server;
 use crate::{MAGIC_NUMBER, chores, now_ms};
-use quiche::{ConnectionId, Header, RecvInfo};
+use quiche::{Connection, ConnectionId, Header, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::collections::HashMap;
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::net::UdpSocket;
+use tokio::time::{Instant, sleep_until};
 
 pub struct Client {
     pub conn: quiche::Connection,
@@ -29,8 +30,8 @@ pub async fn run(
 
     tracing::info!("Server started on: {}", socket_address);
 
-    let socket = UdpSocket::bind(socket_address)?;
-    socket.set_nonblocking(true)?;
+    let socket = UdpSocket::bind(socket_address).await?;
+    //    socket.set_nonblocking(true)?;
 
     let rng = SystemRandom::new();
 
@@ -43,97 +44,106 @@ pub async fn run(
 
     let mut aggregated_data = Vec::with_capacity(BLOCK_SIZE * 2); // aggregation buffer
 
+    let mut timeout_instant: Instant = Instant::now() + Duration::from_secs(10);
     loop {
-        match socket.recv_from(&mut read_buf) {
-            Ok((len, peer_addr)) => {
-                let recv_info = RecvInfo {
-                    from: peer_addr,
-                    to: socket.local_addr()?,
-                };
+        tokio::select! {
+            result =socket.recv_from(&mut read_buf) =>  {
+                match  result {
+                    Ok((len, peer_addr)) => {
+                        let recv_info = RecvInfo {
+                            from: peer_addr,
+                            to: socket.local_addr()?,
+                        };
 
-                let header = match Header::from_slice(&mut read_buf[..len], quiche::MAX_CONN_ID_LEN)
-                {
-                    Ok(h) => h,
-                    Err(e) => {
-                        tracing::error!("Can't parse header: {:?}", e);
-                        continue;
-                    }
-                };
-
-                let client_addr = peer_addr.to_string();
-
-                if active_connections.contains_key(&client_addr) {
-                    let client = active_connections.get_mut(&client_addr).unwrap();
-                    client.last_seen = Instant::now();
-
-                    if let Some(to) = client.conn.timeout() {
-                        // timeout_instant = Instant::now() + to;
-                        println!(">>>>>>>>>>  {:?}", to);
-                    }
-
-                    // Pass read buffer to quiche
-                    match client.conn.recv(&mut read_buf[..len], recv_info) {
-                        Ok(read) => {
-                            assert_eq!(read, len);
-                        }
-                        Err(e) => {
-                            tracing::error!("Ошибка при обработке пакета от {client_addr}: {e}",);
-                            continue;
-                        }
-                    }
-
-                    chores!(client.conn, socket, write_buf, peer_addr);
-                } else if header.ty == quiche::Type::Initial {
-                    tracing::info!("New connection {}", client_addr);
-                    let rand_id = {
-                        let mut rand_id = [0; quiche::MAX_CONN_ID_LEN];
-                        rng.fill(&mut rand_id).unwrap();
-                        rand_id
-                    };
-                    let scid = ConnectionId::from_ref(&rand_id);
-
-                    let conn =
-                        match quiche::accept(&scid, None, recv_info.to, peer_addr, &mut config) {
-                            Ok(c) => c,
+                        let header = match Header::from_slice(&mut read_buf[..len], quiche::MAX_CONN_ID_LEN)
+                        {
+                            Ok(h) => h,
                             Err(e) => {
-                                tracing::error!("Can't create new connection: {:?}", e);
+                                tracing::error!("Can't parse header: {:?}", e);
                                 continue;
                             }
                         };
 
-                    active_connections.insert(
-                        client_addr.clone(),
-                        Client {
-                            conn,
-                            bytes_received: 0,
-                            first_seen: Instant::now(),
-                            last_seen: Instant::now(),
-                        },
-                    );
+                        let client_addr = peer_addr.to_string();
 
-                    // First packet
-                    let client = active_connections.get_mut(&client_addr).unwrap();
-                    match client.conn.recv(&mut read_buf[..len], recv_info) {
-                        Ok(read) => {
-                            tracing::info!("Handshake start handled from {}", client_addr);
-                            assert_eq!(read, len);
-                        }
-                        Err(e) => {
-                            tracing::error!("Handshake error: {:?}", e);
-                            active_connections.remove(&client_addr);
-                            continue;
+                        if active_connections.contains_key(&client_addr) {
+                            let client = active_connections.get_mut(&client_addr).unwrap();
+                            client.last_seen = Instant::now();
+
+                            // Pass read buffer to quiche
+                            match client.conn.recv(&mut read_buf[..len], recv_info) {
+                                Ok(read) => {
+                                    assert_eq!(read, len);
+                                }
+                                Err(e) => {
+                                    tracing::error!("Ошибка при обработке пакета от {client_addr}: {e}",);
+                                    continue;
+                                }
+                            }
+
+                            chores!(client.conn, socket, write_buf, peer_addr);
+                        } else if header.ty == quiche::Type::Initial {
+                            tracing::info!("New connection {}", client_addr);
+                            let rand_id = {
+                                let mut rand_id = [0; quiche::MAX_CONN_ID_LEN];
+                                rng.fill(&mut rand_id).unwrap();
+                                rand_id
+                            };
+                            let scid = ConnectionId::from_ref(&rand_id);
+
+                            let conn =
+                                match quiche::accept(&scid, None, recv_info.to, peer_addr, &mut config) {
+                                    Ok(c) => c,
+                                    Err(e) => {
+                                        tracing::error!("Can't create new connection: {:?}", e);
+                                        continue;
+                                    }
+                                };
+
+                            active_connections.insert(
+                                client_addr.clone(),
+                                Client {
+                                    conn,
+                                    bytes_received: 0,
+                                    first_seen: Instant::now(),
+                                    last_seen: Instant::now(),
+                                },
+                            );
+
+                            // First packet
+                            let client = active_connections.get_mut(&client_addr).unwrap();
+                            match client.conn.recv(&mut read_buf[..len], recv_info) {
+                                Ok(read) => {
+                                    tracing::info!("Handshake start handled from {}", client_addr);
+                                    assert_eq!(read, len);
+                                }
+                                Err(e) => {
+                                    tracing::error!("Handshake error: {:?}", e);
+                                    active_connections.remove(&client_addr);
+                                    continue;
+                                }
+                            }
+                            chores!(client.conn, socket, write_buf, peer_addr);
                         }
                     }
-                    chores!(client.conn, socket, write_buf, peer_addr);
+                    Err(e) => {
+                        if e.kind() == io::ErrorKind::WouldBlock {
+                            // No data, that;s ok
+                        } else {
+                            tracing::error!("Error: {:?}", e);
+                        }
+                    }
                 }
             }
-            Err(e) => {
-                if e.kind() == io::ErrorKind::WouldBlock {
-                    // No data, that;s ok
-                } else {
-                    tracing::error!("Error: {:?}", e);
-                }
+            _ = sleep_until(timeout_instant) => {
+                if let Some((_key, value)) =  active_connections.iter_mut().next() {
+                        value.conn.on_timeout();
+                        tracing::info!("Called on_timeout!");
+
+                };
             }
+
+
         }
 
         let mut stale_connections = Vec::new();
@@ -191,7 +201,7 @@ pub async fn run(
                 }
             }
             loop {
-                let (write, send_info) = match client.conn.send(&mut write_buf) {
+                let (write, _send_info) = match client.conn.send(&mut write_buf) {
                     Ok(v) => v,
 
                     Err(quiche::Error::Done) => {
@@ -206,14 +216,14 @@ pub async fn run(
                     }
                 };
 
-                if let Err(err) = socket.send_to(&write_buf[..write], client_addr) {
+                if let Err(err) = socket.send_to(&write_buf[..write], client_addr).await {
                     // It is not a big deal that we failed sending a datagram. this is Quic, it has delivery guaranties.
                     tracing::error!("Error: {:?}", err);
                 }
             }
-            // if let Some(to) = client.conn.timeout() {
-            //     timeout_instant = Instant::now() + to;
-            // }
+            if let Some(to) = client.conn.timeout() {
+                timeout_instant = Instant::now() + to;
+            }
             if client.last_seen.elapsed() > Duration::from_secs(600) {
                 tracing::info!("Connection with {} is expired", client_addr);
                 stale_connections.push(client_addr.clone());

@@ -1,6 +1,5 @@
 use anyhow::Result;
 use quiche::Config;
-use std::time::Duration;
 
 const MAX_PACKET_SIZE: usize = 1350;
 const IDLE_TIMEOUT_MS: u64 = 60000;
@@ -40,14 +39,14 @@ pub fn create_config(is_server: bool) -> anyhow::Result<Config> {
 
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
 
-    //config.enable_packet_coalescing(false);
-
-    // config.set_max_ack_delay(1);
-    // config.enable_pacing(false);
     if is_server {
-        // config.set_passive(true);
         config.load_cert_chain_from_pem_file("cert.crt")?;
         config.load_priv_key_from_pem_file("cert.key")?;
     }
     Ok(config)
 }
+
+//config.enable_packet_coalescing(false);
+
+// config.set_max_ack_delay(1);
+// config.enable_pacing(false);

@@ -4,9 +4,11 @@ use crate::{MAGIC_NUMBER, chores, now_ms};
 use anyhow::{Result, bail};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
+use tokio::net::UdpSocket;
+use tokio::time::{Instant, sleep_until};
+
 use std::time::Duration;
-use std::time::Instant;
 
 use quiche::{ConnectionId, RecvInfo};
 
@@ -31,9 +33,8 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
     let scid = ConnectionId::from_ref(&rand_id);
 
     let peer: SocketAddr = format!("{}:{}", addr, port).parse().unwrap();
-    let socket = UdpSocket::bind(format!("{}:{}", addr, 0))?;
+    let socket = UdpSocket::bind(format!("{}:{}", addr, 0)).await?;
 
-    socket.set_nonblocking(true)?;
     let mut conn = quiche::connect(None, &scid, socket.local_addr()?, peer, &mut config)?;
 
     // Prepare Quic datagram in the buffer for sending and start handshake
@@ -61,6 +62,8 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
     let mut stream_id: Option<u64> = None;
     let mut message_count = 0;
 
+    let mut timeout_instant: Instant = Instant::now() + Duration::from_secs(1000);
+
     while !conn.is_closed() {
         // Check that connection was established during last ESTABLISH_CONNECTION_TIMEOUT
         if start.elapsed() > ESTABLISH_CONNECTION_TIMEOUT && !connection_established {
@@ -71,7 +74,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
         }
 
         // Here we just reading from socket and push it to Quic conn
-        match socket.recv_from(&mut read_buf) {
+        match socket.recv_from(&mut read_buf).await {
             Ok((len, from)) => {
                 // Pass data to Quic
                 if let Err(err) = conn.recv(
@@ -137,6 +140,10 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                 let moment = Instant::now();
 
                 while offset < total_size {
+                    if let Some(to) = conn.timeout() {
+                        tracing::info!("conn.timeout() {:?}", to);
+                        timeout_instant = Instant::now() + to;
+                    }
                     // conn.stream_send -> conn.send -> socket.send_to
                     match conn.stream_send(stream, &data_to_send[offset..], false) {
                         Ok(written) => {
@@ -167,28 +174,41 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                         Err(quiche::Error::Done) => {
                             chores!(conn, socket, write_buf, peer);
 
-                            match socket.recv_from(&mut read_buf) {
-                                Ok((len, from)) => {
-                                    match conn.recv(
-                                        &mut read_buf[..len],
-                                        RecvInfo {
-                                            from,
-                                            to: socket.local_addr()?,
-                                        },
-                                    ) {
-                                        Ok(_) => {}
+                            tokio::select! {
+
+                                result =socket.recv_from(&mut read_buf) =>  {
+
+                                    match result {
+                                        Ok((len, from)) => {
+                                            match conn.recv(
+                                                &mut read_buf[..len],
+                                                RecvInfo {
+                                                    from,
+                                                    to: socket.local_addr()?,
+                                                },
+                                            ) {
+                                                Ok(_) => {}
+                                                Err(e) => {
+                                                    anyhow::bail!("Error reading from quic conn: {:?}", e);
+                                                }
+                                            }
+                                        }
                                         Err(e) => {
-                                            anyhow::bail!("Error reading from quic conn: {:?}", e);
+                                            if e.kind() == io::ErrorKind::WouldBlock {
+                                                // Ok, no data
+                                                tokio::task::yield_now().await;
+                                            } else {
+                                                tracing::error!("Error reading packet from socket: {e}",);
+                                            }
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    if e.kind() == io::ErrorKind::WouldBlock {
-                                        // Ok, no data
-                                        tokio::task::yield_now().await;
-                                    } else {
-                                        tracing::error!("Error reading packet from socket: {e}",);
-                                    }
+
+                                _ = sleep_until(timeout_instant) => {
+                                   // timeout_instant= Instant::now() + Duration::from_secs(1000);
+                                   tracing::info!("Called on_timeout()");
+                                    conn.on_timeout();
+
                                 }
                             }
 

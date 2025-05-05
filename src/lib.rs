@@ -47,7 +47,7 @@ macro_rules! chores {
                     anyhow::bail!("Can't create initial datagram: {:?}", err);
                 }
             };
-            if let Err(err) = $socket.send_to(&$write_buf[..write], $peer) {
+            if let Err(err) = $socket.send_to(&$write_buf[..write], $peer).await {
                 tracing::error!("Error to send data to socket {:?}", err);
             }
         }
