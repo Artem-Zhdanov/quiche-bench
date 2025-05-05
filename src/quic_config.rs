@@ -33,6 +33,11 @@ pub fn create_config(is_server: bool) -> anyhow::Result<Config> {
     config.verify_peer(false);
     config.set_cc_algorithm(quiche::CongestionControlAlgorithm::BBR);
 
+    config.set_initial_max_data(100_000_000); // лимит всего соединения
+    config.set_initial_max_stream_data_bidi_local(50_000_000); // сколько клиент может отправить в стриме
+    config.set_initial_max_stream_data_bidi_remote(50_000_000); // сколько клиент может получать
+    config.set_initial_max_streams_bidi(1); // у тебя 1 поток, не больше
+
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
 
     //config.enable_packet_coalescing(false);

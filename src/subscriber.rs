@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::config::BLOCK_SIZE;
 use crate::metrics::Metrics;
 use crate::quic_config::configure_server;
-use crate::{MAGIC_NUMBER, now_ms};
+use crate::{MAGIC_NUMBER, chores, now_ms};
 use quiche::{ConnectionId, Header, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::collections::HashMap;
@@ -41,8 +41,6 @@ pub async fn run(
 
     let mut config = configure_server()?;
 
-    let metrics_clone = metrics.clone();
-
     let mut aggregated_data = Vec::with_capacity(BLOCK_SIZE * 2); // aggregation buffer
 
     loop {
@@ -68,6 +66,11 @@ pub async fn run(
                     let client = active_connections.get_mut(&client_addr).unwrap();
                     client.last_seen = Instant::now();
 
+                    if let Some(to) = client.conn.timeout() {
+                        // timeout_instant = Instant::now() + to;
+                        println!(">>>>>>>>>>  {:?}", to);
+                    }
+
                     // Pass read buffer to quiche
                     match client.conn.recv(&mut read_buf[..len], recv_info) {
                         Ok(read) => {
@@ -78,6 +81,8 @@ pub async fn run(
                             continue;
                         }
                     }
+
+                    chores!(client.conn, socket, write_buf, peer_addr);
                 } else if header.ty == quiche::Type::Initial {
                     tracing::info!("New connection {}", client_addr);
                     let rand_id = {
@@ -119,6 +124,7 @@ pub async fn run(
                             continue;
                         }
                     }
+                    chores!(client.conn, socket, write_buf, peer_addr);
                 }
             }
             Err(e) => {
@@ -133,41 +139,17 @@ pub async fn run(
         let mut stale_connections = Vec::new();
 
         for (client_addr, client) in active_connections.iter_mut() {
-            loop {
-                let write = match client.conn.send(&mut write_buf) {
-                    Ok((write, _)) => write,
-
-                    Err(quiche::Error::Done) => {
-                        // No data to send
-                        break;
-                    }
-
-                    Err(e) => {
-                        tracing::error!("Error to create quic packet: {:?}", e);
-                        stale_connections.push(client_addr.clone());
-                        break;
-                    }
-                };
-
-                if let Err(err) = socket.send_to(
-                    &write_buf[..write],
-                    client_addr.parse::<SocketAddr>().unwrap(),
-                ) {
-                    // It is not a big deal that we failed sending a datagram. this is Quic, it has delivery guaranties.
-                    tracing::error!("Error: {:?}", err);
-                }
-            }
-
             if client.conn.is_established() {
                 // for simplicity and performance we have only one stream per connection in this test
                 if let Some(stream_id) = client.conn.readable().next() {
-                    let mut stream_buf = [0; 500 * 1024]; // ZZZ
+                    let mut stream_buf = vec![0; BLOCK_SIZE * 2];
 
                     match client.conn.stream_recv(stream_id, &mut stream_buf) {
                         Ok((read, _fin)) => {
                             if read == 0 {
                                 break; // end of stream
                             }
+
                             aggregated_data.extend_from_slice(&stream_buf[..read]);
 
                             while aggregated_data.len() >= BLOCK_SIZE {
@@ -208,8 +190,31 @@ pub async fn run(
                     }
                 }
             }
+            loop {
+                let (write, send_info) = match client.conn.send(&mut write_buf) {
+                    Ok(v) => v,
 
-            if client.last_seen.elapsed() > Duration::from_secs(30) {
+                    Err(quiche::Error::Done) => {
+                        // No data to send
+                        break;
+                    }
+
+                    Err(e) => {
+                        tracing::error!("Error to create quic packet: {:?}", e);
+                        stale_connections.push(client_addr.clone());
+                        break;
+                    }
+                };
+
+                if let Err(err) = socket.send_to(&write_buf[..write], client_addr) {
+                    // It is not a big deal that we failed sending a datagram. this is Quic, it has delivery guaranties.
+                    tracing::error!("Error: {:?}", err);
+                }
+            }
+            // if let Some(to) = client.conn.timeout() {
+            //     timeout_instant = Instant::now() + to;
+            // }
+            if client.last_seen.elapsed() > Duration::from_secs(600) {
                 tracing::info!("Connection with {} is expired", client_addr);
                 stale_connections.push(client_addr.clone());
             }
@@ -223,6 +228,7 @@ pub async fn run(
         for client_addr in stale_connections {
             active_connections.remove(&client_addr);
         }
+
         // tokio::time::sleep(Duration::from_millis(10)).await;
         tokio::task::yield_now().await;
     }

@@ -1,6 +1,6 @@
 use crate::config::BLOCK_SIZE;
 use crate::quic_config::configure_client;
-use crate::{MAGIC_NUMBER, now_ms};
+use crate::{MAGIC_NUMBER, chores, now_ms};
 use anyhow::{Result, bail};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::io;
@@ -37,15 +37,23 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
     let mut conn = quiche::connect(None, &scid, socket.local_addr()?, peer, &mut config)?;
 
     // Prepare Quic datagram in the buffer for sending and start handshake
-    match conn.send(&mut write_buf) {
-        Ok((write, _)) => {
-            tracing::info!("Start handshake...");
-            socket.send_to(&write_buf[..write], peer)?;
-        }
-        Err(err) => {
-            anyhow::bail!("Can't create initial datagram: {:?}", err);
-        }
-    };
+
+    // loop {
+    //     match conn.send(&mut write_buf) {
+    //         Ok((write, _)) => {
+    //             tracing::info!("Start handshake...");
+    //             socket.send_to(&write_buf[..write], peer)?;
+    //         }
+    //         Err(quiche::Error::Done) => {
+    //             // No data, ok
+    //             break;
+    //         }
+    //         Err(err) => {
+    //             anyhow::bail!("Can't create initial datagram: {:?}", err);
+    //         }
+    //     };
+    // }
+    chores!(conn, socket, write_buf, peer);
 
     let start = Instant::now();
     let mut connection_established = false;
@@ -88,25 +96,27 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
 
         // Read from Quic conn and send ALL it has
         // loop {
-        match conn.send(&mut write_buf) {
-            Ok((write, _)) => match socket.send_to(&write_buf[..write], peer) {
-                Ok(sent) => {
-                    assert_eq!(write, sent);
-                }
-                Err(e) => {
-                    anyhow::bail!("Error sending packet socket: {:?}", e);
-                }
-            },
-            Err(quiche::Error::Done) => {
-                // No data, ok
-                //       break;
-            }
-            Err(e) => {
-                bail!("Error passing packet from Quic: {:?}", e);
-                //       break;
-            }
-        };
-        //  }
+        //     match conn.send(&mut write_buf) {
+        //         Ok((write, _)) => match socket.send_to(&write_buf[..write], peer) {
+        //             Ok(sent) => {
+        //                 assert_eq!(write, sent);
+        //             }
+        //             Err(e) => {
+        //                 anyhow::bail!("Error sending packet socket: {:?}", e);
+        //             }
+        //         },
+        //         Err(quiche::Error::Done) => {
+        //             // No data, ok
+        //             break;
+        //         }
+        //         Err(e) => {
+        //             bail!("Error passing packet from Quic: {:?}", e);
+        //             //       break;
+        //         }
+        //     };
+        // }
+
+        chores!(conn, socket, write_buf, peer);
 
         if conn.is_established() && !connection_established {
             connection_established = true;
@@ -137,22 +147,26 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                             // );
 
                             // Create datagrams
-                            match conn.send(&mut write_buf) {
-                                Ok((write, _)) => {
-                                    // assert_eq!(written, write);
-                                    socket.send_to(&write_buf[..write], peer)?;
-                                }
-                                Err(quiche::Error::Done) => {
-                                    // Ok. There is no more work to do.
-                                }
-                                Err(e) => {
-                                    bail!("Error to create quic packet: {:?}", e);
-                                }
-                            }
+                            // loop {
+                            //     match conn.send(&mut write_buf) {
+                            //         Ok((write, _)) => {
+                            //             socket.send_to(&write_buf[..write], peer)?;
+                            //         }
+                            //         Err(quiche::Error::Done) => {
+                            //             // Ok. There is no more work to do.
+                            //             break;
+                            //         }
+                            //         Err(e) => {
+                            //             bail!("Error to create quic packet: {:?}", e);
+                            //         }
+                            //     }
+                            // }
+
+                            //chores!(conn, socket, write_buf, peer);
                         }
                         Err(quiche::Error::Done) => {
-                            // "Done" means "wait" just wait
-                            //++++++ Quic transport part start
+                            chores!(conn, socket, write_buf, peer);
+
                             match socket.recv_from(&mut read_buf) {
                                 Ok((len, from)) => {
                                     match conn.recv(
@@ -178,48 +192,51 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                                 }
                             }
 
-                            //+++ Read from Quic com and send ALL it has
-                            //  loop {
-                            match conn.send(&mut write_buf) {
-                                Ok((write, _)) => match socket.send_to(&write_buf[..write], peer) {
-                                    Ok(sent) => {
-                                        assert_eq!(write, sent);
-                                    }
-                                    Err(e) => {
-                                        anyhow::bail!("Error sending packet socket: {:?}", e);
-                                    }
-                                },
-                                Err(quiche::Error::Done) => {
-                                    // No data, ok
-                                    //  break;
-                                }
-                                Err(e) => {
-                                    anyhow::bail!("Error passing packet from Quic: {:?}", e);
-                                }
-                            };
-                            //   }
-                            //---
+                            // //+++ Read from Quic com and send ALL it has
+                            // loop {
+                            //     match conn.send(&mut write_buf) {
+                            //         Ok((write, _)) => match socket
+                            //             .send_to(&write_buf[..write], peer)
+                            //         {
+                            //             Ok(sent) => {
+                            //                 assert_eq!(write, sent);
+                            //             }
+                            //             Err(e) => {
+                            //                 anyhow::bail!("Error sending packet socket: {:?}", e);
+                            //             }
+                            //         },
+                            //         Err(quiche::Error::Done) => {
+                            //             // No data, ok
+                            //             break;
+                            //         }
+                            //         Err(e) => {
+                            //             anyhow::bail!("Error passing packet from Quic: {:?}", e);
+                            //         }
+                            //     };
+                            // }
+                            // //---
                         }
                         Err(e) => {
                             bail!("Error to send data to stream: {:?}", e);
                         }
                     }
+                    chores!(conn, socket, write_buf, peer);
                 }
+
                 message_count += 1;
 
                 let elapsed = moment.elapsed().as_millis() as u64;
                 if elapsed < 330 {
-                    //  tokio::time::sleep(Duration::from_millis(330 - elapsed)).await;
-                    tokio::time::sleep(Duration::from_millis(33)).await;
+                    // tokio::time::sleep(Duration::from_millis(330 - elapsed)).await;
+                    // tokio::time::sleep(Duration::from_millis(33)).await;
                 } else {
                     tracing::error!("Elapsed time is too long: {} ms", elapsed);
                 }
                 tracing::info!("{message_count}");
+                let stats = conn.stats();
+                tracing::info!("{:?}", stats);
             }
             tokio::task::yield_now().await;
-
-            // let stats = conn.stats();
-            // tracing::info!("{:?}", stats);
         }
     }
     tracing::info!("Connection closed");

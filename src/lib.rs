@@ -33,6 +33,27 @@ pub fn ports_string_to_vec(input: &str) -> anyhow::Result<Vec<u16>> {
     Ok(ports.into_iter().collect())
 }
 
+#[macro_export]
+macro_rules! chores {
+    ($conn:expr, $socket:expr, $write_buf:expr, $peer:expr) => {{
+        loop {
+            let write = match $conn.send(&mut $write_buf) {
+                Ok((write, _)) => write,
+                Err(quiche::Error::Done) => {
+                    // No data, ok
+                    break;
+                }
+                Err(err) => {
+                    anyhow::bail!("Can't create initial datagram: {:?}", err);
+                }
+            };
+            if let Err(err) = $socket.send_to(&$write_buf[..write], $peer) {
+                tracing::error!("Error to send data to socket {:?}", err);
+            }
+        }
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     use super::ports_string_to_vec;
