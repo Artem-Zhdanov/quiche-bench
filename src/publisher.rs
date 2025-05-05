@@ -125,7 +125,18 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
             } else {
                 tracing::error!("Elapsed time is too long: {} ms", elapsed);
             }
-            tracing::info!("Messages sent: {}, Stats{:?}", message_count, conn.stats());
+            let stream_capacity = conn.stream_capacity(stream_id);
+            tracing::info!(
+                "Messages sent: {}, Stats{:?}, stream_cap: {:?}",
+                message_count,
+                conn.stats(),
+                stream_capacity
+            );
+            if let Ok(capacity) = stream_capacity {
+                if capacity < 1000 {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }
         }
     }
     tracing::info!("Connection closed");
