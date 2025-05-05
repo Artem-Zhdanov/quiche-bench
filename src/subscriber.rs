@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::config::BLOCK_SIZE;
 use crate::metrics::Metrics;
 use crate::quic_config::configure_server;
-use crate::{MAGIC_NUMBER, chores, now_ms};
+use crate::{MAGIC_NUMBER, flush_send, now_ms};
 use quiche::{Connection, ConnectionId, Header, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::collections::HashMap;
@@ -81,7 +81,7 @@ pub async fn run(
                                 }
                             }
 
-                            chores!(client.conn, socket, write_buf, peer_addr);
+                            flush_send!(client.conn, socket, write_buf, peer_addr);
                         } else if header.ty == quiche::Type::Initial {
                             tracing::info!("New connection {}", client_addr);
                             let rand_id = {
@@ -123,7 +123,7 @@ pub async fn run(
                                     continue;
                                 }
                             }
-                            chores!(client.conn, socket, write_buf, peer_addr);
+                            flush_send!(client.conn, socket, write_buf, peer_addr);
                         }
                     }
                     Err(e) => {

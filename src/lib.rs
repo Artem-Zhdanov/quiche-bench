@@ -34,7 +34,7 @@ pub fn ports_string_to_vec(input: &str) -> anyhow::Result<Vec<u16>> {
 }
 
 #[macro_export]
-macro_rules! chores {
+macro_rules! flush_send {
     ($conn:expr, $socket:expr, $write_buf:expr, $peer:expr) => {{
         loop {
             let write = match $conn.send(&mut $write_buf) {

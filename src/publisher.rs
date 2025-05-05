@@ -1,6 +1,6 @@
 use crate::config::BLOCK_SIZE;
 use crate::quic_config::configure_client;
-use crate::{MAGIC_NUMBER, chores, now_ms};
+use crate::{MAGIC_NUMBER, flush_send, now_ms};
 use anyhow::{Result, bail};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::io;
@@ -54,7 +54,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
     //         }
     //     };
     // }
-    chores!(conn, socket, write_buf, peer);
+    flush_send!(conn, socket, write_buf, peer);
 
     let start = Instant::now();
     let mut connection_established = false;
@@ -119,7 +119,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
         //     };
         // }
 
-        chores!(conn, socket, write_buf, peer);
+        flush_send!(conn, socket, write_buf, peer);
 
         if conn.is_established() && !connection_established {
             connection_established = true;
@@ -172,7 +172,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                             //chores!(conn, socket, write_buf, peer);
                         }
                         Err(quiche::Error::Done) => {
-                            chores!(conn, socket, write_buf, peer);
+                            flush_send!(conn, socket, write_buf, peer);
 
                             tokio::select! {
 
@@ -240,7 +240,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                             bail!("Error to send data to stream: {:?}", e);
                         }
                     }
-                    chores!(conn, socket, write_buf, peer);
+                    flush_send!(conn, socket, write_buf, peer);
                 }
 
                 message_count += 1;
