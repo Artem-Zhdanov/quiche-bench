@@ -34,26 +34,10 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
 
     let peer: SocketAddr = format!("{}:{}", addr, port).parse().unwrap();
     let socket = UdpSocket::bind(format!("{}:{}", addr, 0)).await?;
+    // socket.set_nonblocking(true)?;
 
     let mut conn = quiche::connect(None, &scid, socket.local_addr()?, peer, &mut config)?;
 
-    // Prepare Quic datagram in the buffer for sending and start handshake
-
-    // loop {
-    //     match conn.send(&mut write_buf) {
-    //         Ok((write, _)) => {
-    //             tracing::info!("Start handshake...");
-    //             socket.send_to(&write_buf[..write], peer)?;
-    //         }
-    //         Err(quiche::Error::Done) => {
-    //             // No data, ok
-    //             break;
-    //         }
-    //         Err(err) => {
-    //             anyhow::bail!("Can't create initial datagram: {:?}", err);
-    //         }
-    //     };
-    // }
     flush_send!(conn, socket, write_buf, peer);
 
     let start = Instant::now();
@@ -73,10 +57,8 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
             );
         }
 
-        // Here we just reading from socket and push it to Quic conn
         match socket.recv_from(&mut read_buf).await {
             Ok((len, from)) => {
-                // Pass data to Quic
                 if let Err(err) = conn.recv(
                     &mut read_buf[..len],
                     RecvInfo {

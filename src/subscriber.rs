@@ -20,18 +20,13 @@ pub struct Client {
     pub last_seen: Instant,
 }
 
-pub async fn run(
-    metrics: Arc<Metrics>,
-    ot_metrics: Arc<Metrics>,
-    address: String,
-    port: u16,
-) -> Result<()> {
+pub async fn run(ot_metrics: Arc<Metrics>, address: String, port: u16) -> Result<()> {
     let socket_address = format!("{}:{}", address, port);
 
     tracing::info!("Server started on: {}", socket_address);
 
     let socket = UdpSocket::bind(socket_address).await?;
-    //    socket.set_nonblocking(true)?;
+    // socket.set_nonblocking(true)?;
 
     let rng = SystemRandom::new();
 

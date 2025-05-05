@@ -37,7 +37,7 @@ pub fn init_metrics() -> Arc<Metrics> {
     opentelemetry::global::set_meter_provider(meter_provider.clone());
     let meter = &opentelemetry::global::meter("quic");
 
-    let ot_metrics = Arc::new(Metrics {
+    let metrics = Arc::new(Metrics {
         latency: meter
             .u64_histogram("quic_latency")
             .with_boundaries(vec![
@@ -47,5 +47,5 @@ pub fn init_metrics() -> Arc<Metrics> {
             ])
             .build(),
     });
-    ot_metrics
+    metrics
 }
