@@ -39,7 +39,7 @@ pub fn create_config(is_server: bool) -> anyhow::Result<Config> {
 
     config.verify_peer(false);
 
-    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::BBR);
+    config.set_cc_algorithm(quiche::CongestionControlAlgorithm::CUBIC);
 
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
 

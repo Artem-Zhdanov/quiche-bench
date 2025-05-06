@@ -1,8 +1,10 @@
 use crate::config::BLOCK_SIZE;
 use crate::metrics::Metrics;
 use crate::quic_config::configure_client;
-use crate::{MAGIC_NUMBER, flush_send, now_ms};
+use crate::{MAGIC_NUMBER, flush_send, now_ms, wait_optional_deadline};
 use anyhow::{Result, bail};
+use core::arch;
+use opentelemetry::KeyValue;
 use quiche::{ConnectionId, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
 use std::io;
@@ -23,6 +25,8 @@ pub async fn run(
     port: u16,
     metrics: Arc<Metrics>,
 ) -> Result<()> {
+    let attr = &[KeyValue::new("port", port.to_string())];
+
     let mut data_to_send = vec![42u8; BLOCK_SIZE];
 
     let rng = SystemRandom::new();
@@ -54,7 +58,7 @@ pub async fn run(
     let mut stream_id: Option<u64> = None;
     let mut message_count = 0;
 
-    let mut timeout_instant: Instant = Instant::now() + Duration::from_secs(1000);
+    let mut timeout_instant: Option<Instant> = None;
 
     while !conn.is_closed() {
         // Check that connection was established during last ESTABLISH_CONNECTION_TIMEOUT
@@ -99,7 +103,7 @@ pub async fn run(
 
             while offset < total_size {
                 if let Some(to) = conn.timeout() {
-                    timeout_instant = Instant::now() + to;
+                    timeout_instant = Some(Instant::now() + to);
                 }
 
                 match conn.stream_send(stream_id, &data_to_send[offset..], false) {
@@ -118,7 +122,7 @@ pub async fn run(
                                     Err(e) => tracing::error!("Error reading packet from socket: {e}")
                                 }
                             }
-                            _ = sleep_until(timeout_instant) => {
+                            _ = wait_optional_deadline(timeout_instant) => {
                                 tracing::info!("Called on_timeout()");
                                 conn.on_timeout();
                             }
@@ -135,7 +139,7 @@ pub async fn run(
             if moment.elapsed() < Duration::from_millis(330) {
                 loop {
                     if let Some(to) = conn.timeout() {
-                        timeout_instant = Instant::now() + to;
+                        timeout_instant = Some(Instant::now() + to);
                     }
 
                     tokio::select! {
@@ -153,7 +157,7 @@ pub async fn run(
                                 Ok(Err(e)) => tracing::error!("Error reading packet from socket: {e}")
                             }
                         }
-                        _ = sleep_until(timeout_instant) => {
+                        _ = wait_optional_deadline(timeout_instant) => {
                             conn.on_timeout();
                         }
                     }
@@ -175,13 +179,13 @@ pub async fn run(
                 stream_capacity
             );
 
-            metrics.sent.record(stats.sent as u64, &[]);
-            metrics.recv.record(stats.recv as u64, &[]);
-            metrics.lost.record(stats.lost as u64, &[]);
+            metrics.sent.record(stats.sent as u64, attr);
+            metrics.recv.record(stats.recv as u64, attr);
+            metrics.lost.record(stats.lost as u64, attr);
             metrics.retrans.record(stats.retrans as u64, &[]);
-            metrics.sent_bytes.record(stats.sent_bytes as u64, &[]);
-            metrics.recv_bytes.record(stats.recv_bytes as u64, &[]);
-            metrics.lost_bytes.record(stats.lost_bytes as u64, &[]);
+            metrics.sent_bytes.record(stats.sent_bytes as u64, attr);
+            metrics.recv_bytes.record(stats.recv_bytes as u64, attr);
+            metrics.lost_bytes.record(stats.lost_bytes as u64, attr);
 
             if let Ok(capacity) = stream_capacity {
                 if capacity < 1000 {
