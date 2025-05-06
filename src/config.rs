@@ -12,13 +12,14 @@ pub struct Config {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Subscriber {
-    pub addr: String,
+    pub addr_listen: String,
     pub ports: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ActiveSubscribers {
-    pub addr: String,
+    pub addr_listen: String,
+    pub addr_peer: String,
     pub ports: String,
 }
 

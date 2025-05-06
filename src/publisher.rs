@@ -15,7 +15,7 @@ const ESTABLISH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 const POLL_WAIT: Duration = Duration::from_millis(1);
 
-pub async fn run(addr: String, port: u16) -> Result<()> {
+pub async fn run(listen_addr: String, peer_addr: String, port: u16) -> Result<()> {
     let mut data_to_send = vec![42u8; BLOCK_SIZE];
 
     let rng = SystemRandom::new();
@@ -32,9 +32,9 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
     };
     let scid = ConnectionId::from_ref(&rand_id);
 
-    let peer: SocketAddr = format!("{}:{}", addr, port).parse().unwrap();
+    let peer: SocketAddr = format!("{}:{}", peer_addr, port).parse().unwrap();
 
-    let std_socket = StdUdpSocket::bind(format!("{}:{}", addr, 0))?;
+    let std_socket = StdUdpSocket::bind(format!("{}:{}", listen_addr, 0))?;
 
     std_socket.set_nonblocking(true)?;
     let socket = TokioUdpSocket::from_std(std_socket)?;

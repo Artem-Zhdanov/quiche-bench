@@ -27,10 +27,10 @@ async fn main() -> Result<()> {
     let metrics = init_metrics();
 
     // Run subscribers
-    for Subscriber { addr, ports } in config.subscriber {
+    for Subscriber { addr_listen, ports } in config.subscriber {
         for port in ports_string_to_vec(&ports)? {
             let metrics_clone = metrics.clone();
-            let addr_clone = addr.clone();
+            let addr_clone = addr_listen.clone();
             let _ = tokio::spawn(async move {
                 println!("Running subscribers");
 
@@ -44,13 +44,19 @@ async fn main() -> Result<()> {
     sleep(Duration::from_secs(1)).await;
 
     // Run publisher
-    for ActiveSubscribers { addr, ports } in config.publisher {
+    for ActiveSubscribers {
+        addr_listen,
+        addr_peer,
+        ports,
+    } in config.publisher
+    {
         for port in ports_string_to_vec(&ports)? {
-            let addr_clone = addr.clone();
+            let peer_addr = addr_peer.clone();
+            let listen_addr = addr_listen.clone();
             let _ = tokio::spawn(async move {
                 println!("Running publisher");
 
-                if let Err(err) = publisher::run(addr_clone, port).await {
+                if let Err(err) = publisher::run(listen_addr, peer_addr, port).await {
                     tracing::error!("Publisher task failed: {}", err);
                 }
             });
