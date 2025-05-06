@@ -9,7 +9,7 @@ use tokio::net::UdpSocket as TokioUdpSocket;
 
 use crate::{
     MAGIC_NUMBER, config::BLOCK_SIZE, flush_send, metrics::Metrics, now_ms,
-    quic_config::configure_server,
+    quic_config::configure_server, wait_optional_deadline,
 };
 
 pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()> {
@@ -27,8 +27,7 @@ pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()
     let mut read_buf = [0; 65535];
     let mut write_buf = [0; 65535];
     let mut block_aggregator = Vec::with_capacity(BLOCK_SIZE * 2);
-    let mut timeout_instant = Instant::now() + Duration::from_secs(10);
-
+    let mut timeout_instant: Option<Instant> = None;
     loop {
         tokio::select! {
             result = socket.recv_from(&mut read_buf) => {
@@ -66,14 +65,13 @@ pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()
                 }
             }
 
-            _ = sleep_until(timeout_instant) => {
+            _ = wait_optional_deadline(timeout_instant) => {
                 if let Some((_id, conn)) = &mut conn_opt {
                     conn.on_timeout();
                     tracing::info!("Timeout triggered");
                 }
             }
         }
-
         if let Some((client_id, conn)) = &mut conn_opt {
             if conn.is_established() {
                 if let Some(stream_id) = conn.readable().next() {
@@ -104,14 +102,12 @@ pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()
                     }
                 }
             }
-
             flush_send!(conn, socket, write_buf, client_id.clone());
 
             if let Some(to) = conn.timeout() {
-                timeout_instant = Instant::now() + to;
+                timeout_instant = Some(Instant::now() + to);
             }
         }
-
         tokio::task::yield_now().await;
     }
 }

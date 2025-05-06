@@ -3,6 +3,8 @@ pub mod metrics;
 pub mod publisher;
 pub mod quic_config;
 pub mod subscriber;
+use futures::future;
+use tokio::time::{Instant, sleep_until};
 
 pub const MAGIC_NUMBER: u64 = 123456789876543210;
 pub fn now_ms() -> u64 {
@@ -31,6 +33,13 @@ pub fn ports_string_to_vec(input: &str) -> anyhow::Result<Vec<u16>> {
     }
 
     Ok(ports.into_iter().collect())
+}
+
+pub async fn wait_optional_deadline(timeout: Option<Instant>) {
+    match timeout {
+        Some(instant) => sleep_until(instant).await,
+        None => future::pending::<()>().await,
+    }
 }
 
 #[macro_export]
