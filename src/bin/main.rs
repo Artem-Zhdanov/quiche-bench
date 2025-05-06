@@ -5,8 +5,9 @@ use quiche_bench::{
     metrics::init_metrics,
     ports_string_to_vec, publisher, subscriber,
 };
+use rand::Rng;
 use std::time::Duration;
-use tokio::time::sleep;
+use tokio::time::sleep; // Import the Rng trait for gen_range
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -55,6 +56,8 @@ async fn main() -> Result<()> {
             let listen_addr = addr_listen.clone();
             let _ = tokio::spawn(async move {
                 println!("Running publisher");
+                let jitter = rand::rng().random_range(0..200);
+                tokio::time::sleep(Duration::from_millis(jitter)).await;
 
                 if let Err(err) = publisher::run(listen_addr, peer_addr, port).await {
                     tracing::error!("Publisher task failed: {}", err);
