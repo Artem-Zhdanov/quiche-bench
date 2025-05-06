@@ -1,5 +1,4 @@
 use crate::config::BLOCK_SIZE;
-use crate::metrics::Metrics;
 use crate::quic_config::configure_client;
 use crate::{MAGIC_NUMBER, flush_send, now_ms};
 use anyhow::{Result, bail};
@@ -8,21 +7,14 @@ use ring::rand::{SecureRandom, SystemRandom};
 use std::io;
 use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket as TokioUdpSocket;
 use tokio::time::{Instant, sleep_until, timeout};
 
 const ESTABLISH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
-const POLL_WAIT: Duration = Duration::from_millis(1);
 
-pub async fn run(
-    listen_addr: String,
-    peer_addr: String,
-    port: u16,
-    metrics: Arc<Metrics>,
-) -> Result<()> {
+pub async fn run(addr: String, port: u16) -> Result<()> {
     let mut data_to_send = vec![42u8; BLOCK_SIZE];
 
     let rng = SystemRandom::new();
@@ -39,9 +31,9 @@ pub async fn run(
     };
     let scid = ConnectionId::from_ref(&rand_id);
 
-    let peer: SocketAddr = format!("{}:{}", peer_addr, port).parse().unwrap();
+    let peer: SocketAddr = format!("{}:{}", addr, port).parse().unwrap();
 
-    let std_socket = StdUdpSocket::bind(format!("{}:{}", listen_addr, 0))?;
+    let std_socket = StdUdpSocket::bind(format!("{}:{}", addr, 0))?;
 
     std_socket.set_nonblocking(true)?;
     let socket = TokioUdpSocket::from_std(std_socket)?;
@@ -65,17 +57,16 @@ pub async fn run(
             );
         }
 
-        match timeout(POLL_WAIT, socket.recv_from(&mut read_buf)).await {
-            Ok(Ok((len, from))) => {
+        match socket.recv_from(&mut read_buf).await {
+            Ok((len, from)) => {
                 let info = RecvInfo {
                     from,
                     to: socket.local_addr()?,
                 };
                 conn.recv(&mut read_buf[..len], info)?;
             }
-            Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Ok(Err(e)) => tracing::error!("Error reading packet from socket: {e}"),
-            Err(_) => {} // Ok, no data
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) => tracing::error!("Error reading packet from socket: {e}"),
         }
 
         flush_send!(conn, socket, write_buf, peer);
@@ -97,8 +88,6 @@ pub async fn run(
 
             let moment = Instant::now();
 
-            tracing::info!("entered");
-
             while offset < total_size {
                 if let Some(to) = conn.timeout() {
                     timeout_instant = Instant::now() + to;
@@ -109,22 +98,8 @@ pub async fn run(
                         offset += written;
                     }
                     Err(quiche::Error::Done) => {
-                        //  flush_send!(conn, socket, write_buf, peer);
-                        tokio::select! {
-                            result = socket.recv_from(&mut read_buf) =>  {
-                                match result {
-                                    Ok((len, from)) => {
-                                        conn.recv(&mut read_buf[..len],RecvInfo {from,to: socket.local_addr()?})?;
-                                    }
-                                    Err(e) if e.kind() == io::ErrorKind::WouldBlock  => {},
-                                    Err(e) => tracing::error!("Error reading packet from socket: {e}")
-                                }
-                            }
-                            _ = sleep_until(timeout_instant) => {
-                                tracing::info!("Called on_timeout()");
-                                conn.on_timeout();
-                            }
-                        }
+                        handle_socket_events(&socket, &mut conn, &mut read_buf, timeout_instant)
+                            .await?;
                     }
                     Err(e) => bail!("Error to send data to stream: {:?}", e),
                 }
@@ -132,6 +107,7 @@ pub async fn run(
                 flush_send!(conn, socket, write_buf, peer);
             } // -- while offset < total_size 
 
+            tracing::error!("SENT");
             message_count += 1;
 
             if moment.elapsed() < Duration::from_millis(330) {
@@ -139,11 +115,20 @@ pub async fn run(
                     if let Some(to) = conn.timeout() {
                         timeout_instant = Instant::now() + to;
                     }
+                    // if let Err(err) =
+                    //     handle_socket_events(&socket, &mut conn, &mut read_buf, timeout_instant)
+                    //         .await
+                    // {
+                    //     tracing::error!("ERROR {:?}", err);
+                    // }
+                    tracing::info!("----------------");
 
                     tokio::select! {
-                        result = timeout(POLL_WAIT, socket.recv_from(&mut read_buf)) =>  {
+                        result = timeout(Duration::from_millis(50), socket.recv_from(&mut read_buf)) =>  {
                             match result {
-                                Err(_) => { } // No data, ok
+                                Err(_) => {
+                                    tracing::info!("socket timeouted")
+                                }
                                 Ok(Ok((len, from))) => {
                                   if let Err(err)=  conn.recv(&mut read_buf[..len],RecvInfo {from,to: socket.local_addr()?}) {
                                     tracing::error!("conn.recv error {:?}", err);
@@ -159,7 +144,11 @@ pub async fn run(
                             conn.on_timeout();
                         }
                     }
+                    tracing::info!("EXIT");
+
                     if moment.elapsed() + POLL_INTERVAL >= Duration::from_millis(330) {
+                        tracing::info!("BREAK");
+
                         break;
                     }
                     tokio::time::sleep(POLL_INTERVAL).await;
@@ -167,26 +156,13 @@ pub async fn run(
             } else {
                 tracing::error!("Elapsed time is too long: {:?} ms", moment.elapsed());
             }
-
-            tracing::info!("exited");
-
             let stream_capacity = conn.stream_capacity(stream_id);
-            let stats = conn.stats();
-            tracing::info!(
-                "Messages sent: {}, Stats{:?}, stream_cap: {:?}",
-                message_count,
-                stats,
-                stream_capacity
-            );
-
-            metrics.sent.record(stats.sent as u64, &[]);
-            metrics.recv.record(stats.recv as u64, &[]);
-            metrics.lost.record(stats.lost as u64, &[]);
-            metrics.retrans.record(stats.retrans as u64, &[]);
-            metrics.sent_bytes.record(stats.sent_bytes as u64, &[]);
-            metrics.recv_bytes.record(stats.recv_bytes as u64, &[]);
-            metrics.lost_bytes.record(stats.lost_bytes as u64, &[]);
-
+            // tracing::info!(
+            //     "Messages sent: {}, Stats{:?}, stream_cap: {:?}",
+            //     message_count,
+            //     conn.stats(),
+            //     stream_capacity
+            // );
             if let Ok(capacity) = stream_capacity {
                 if capacity < 1000 {
                     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -196,5 +172,31 @@ pub async fn run(
     }
     tracing::info!("Connection closed");
 
+    Ok(())
+}
+
+async fn handle_socket_events(
+    socket: &TokioUdpSocket,
+    conn: &mut quiche::Connection,
+    read_buf: &mut [u8],
+    timeout_instant: Instant,
+) -> Result<()> {
+    tokio::select! {
+        result = socket.recv_from(read_buf) =>  {
+            match result {
+                Ok((len, from)) => {
+                    conn.recv(&mut read_buf[..len], RecvInfo { from, to: socket.local_addr()? })?;
+                    tracing::info!("DONE conn.recv()");
+
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {},
+                Err(e) => tracing::error!("Error reading packet from socket: {e}"),
+            }
+        }
+        _ = sleep_until(timeout_instant) => {
+            tracing::info!("Called on_timeout()");
+            conn.on_timeout();
+        }
+    }
     Ok(())
 }

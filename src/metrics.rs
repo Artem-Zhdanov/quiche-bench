@@ -1,3 +1,4 @@
+use opentelemetry::metrics::Gauge;
 use opentelemetry::metrics::Histogram;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,6 +9,14 @@ use opentelemetry_sdk::runtime::Tokio;
 
 pub struct Metrics {
     pub latency: Histogram<u64>,
+
+    pub recv: Gauge<u64>,
+    pub sent: Gauge<u64>,
+    pub lost: Gauge<u64>,
+    pub retrans: Gauge<u64>,
+    pub sent_bytes: Gauge<u64>,
+    pub recv_bytes: Gauge<u64>,
+    pub lost_bytes: Gauge<u64>,
 }
 
 pub fn init_metrics() -> Arc<Metrics> {
@@ -46,6 +55,13 @@ pub fn init_metrics() -> Arc<Metrics> {
                 250.0, 280.0, 300.0, 1000.0, 5000.0, 10000.0,
             ])
             .build(),
+        sent: meter.u64_gauge("quic_sent").build(),
+        recv: meter.u64_gauge("quic_recv").build(),
+        lost: meter.u64_gauge("quic_lost").build(),
+        retrans: meter.u64_gauge("quic_retrans").build(),
+        sent_bytes: meter.u64_gauge("quic_sent_bytes").build(),
+        recv_bytes: meter.u64_gauge("quic_recv_bytes").build(),
+        lost_bytes: meter.u64_gauge("quic_lost_bytes").build(),
     });
     metrics
 }

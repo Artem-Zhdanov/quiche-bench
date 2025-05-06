@@ -51,15 +51,19 @@ async fn main() -> Result<()> {
         ports,
     } in config.publisher
     {
-        for port in ports_string_to_vec(&ports)? {
+        let ports = ports_string_to_vec(&ports)?;
+        let jitter = 330000 / ports.len() as u64;
+
+        for port in ports {
             let peer_addr = addr_peer.clone();
             let listen_addr = addr_listen.clone();
+            let metrics_clone = metrics.clone();
+
             let _ = tokio::spawn(async move {
                 println!("Running publisher");
-                let jitter = rand::rng().random_range(0..200);
-                tokio::time::sleep(Duration::from_millis(jitter)).await;
-
-                if let Err(err) = publisher::run(listen_addr, peer_addr, port).await {
+                tokio::time::sleep(Duration::from_micros(jitter)).await;
+                if let Err(err) = publisher::run(listen_addr, peer_addr, port, metrics_clone).await
+                {
                     tracing::error!("Publisher task failed: {}", err);
                 }
             });

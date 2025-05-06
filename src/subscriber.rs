@@ -12,7 +12,7 @@ use crate::{
     quic_config::configure_server,
 };
 
-pub async fn run(ot_metrics: Arc<Metrics>, address: String, port: u16) -> Result<()> {
+pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()> {
     let std_sock = StdUdpSocket::bind(format!("{address}:{port}"))?;
     std_sock.set_nonblocking(true)?;
 
@@ -94,7 +94,7 @@ pub async fn run(ot_metrics: Arc<Metrics>, address: String, port: u16) -> Result
 
                                 let sent_ts = u64::from_be_bytes(block[8..16].try_into()?);
                                 let latency = now_ms() - sent_ts;
-                                ot_metrics.latency.record(latency, &[]);
+                                metrics.latency.record(latency, &[]);
                                 tracing::info!("Latency ms: {latency}");
                             }
                         }
