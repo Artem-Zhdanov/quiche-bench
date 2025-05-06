@@ -97,8 +97,6 @@ pub async fn run(
 
             let moment = Instant::now();
 
-            tracing::info!("entered");
-
             while offset < total_size {
                 if let Some(to) = conn.timeout() {
                     timeout_instant = Instant::now() + to;
@@ -167,8 +165,6 @@ pub async fn run(
             } else {
                 tracing::error!("Elapsed time is too long: {:?} ms", moment.elapsed());
             }
-
-            tracing::info!("exited");
 
             let stream_capacity = conn.stream_capacity(stream_id);
             let stats = conn.stats();
