@@ -9,10 +9,11 @@ use std::net::SocketAddr;
 use std::net::UdpSocket as StdUdpSocket;
 use std::time::Duration;
 use tokio::net::UdpSocket as TokioUdpSocket;
-use tokio::time::{Instant, sleep_until};
+use tokio::time::{Instant, sleep_until, timeout};
 
 const ESTABLISH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_MESSAGE_NUM: u32 = 100000;
+const POLL_INTERVAL: Duration = Duration::from_millis(1);
+const POLL_WAIT: Duration = Duration::from_millis(1);
 
 pub async fn run(addr: String, port: u16) -> Result<()> {
     let mut data_to_send = vec![42u8; BLOCK_SIZE];
@@ -57,16 +58,17 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
             );
         }
 
-        match socket.recv_from(&mut read_buf).await {
-            Ok((len, from)) => {
+        match timeout(POLL_WAIT, socket.recv_from(&mut read_buf)).await {
+            Ok(Ok((len, from))) => {
                 let info = RecvInfo {
                     from,
                     to: socket.local_addr()?,
                 };
                 conn.recv(&mut read_buf[..len], info)?;
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-            Err(e) => tracing::error!("Error reading packet from socket: {e}"),
+            Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Ok(Err(e)) => tracing::error!("Error reading packet from socket: {e}"),
+            Err(_) => {} // Ok, no data
         }
 
         flush_send!(conn, socket, write_buf, peer);
@@ -77,7 +79,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
         }
 
         // Main send messages loop. Publisher spin here
-        if stream_id.is_some() && message_count < MAX_MESSAGE_NUM {
+        if stream_id.is_some() {
             let stream_id = stream_id.unwrap();
             let mut offset = 0;
 
@@ -87,6 +89,8 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
             let total_size = data_to_send.len();
 
             let moment = Instant::now();
+
+            tracing::info!("entered");
 
             while offset < total_size {
                 if let Some(to) = conn.timeout() {
@@ -98,7 +102,7 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
                         offset += written;
                     }
                     Err(quiche::Error::Done) => {
-                        flush_send!(conn, socket, write_buf, peer);
+                        //  flush_send!(conn, socket, write_buf, peer);
                         tokio::select! {
                             result = socket.recv_from(&mut read_buf) =>  {
                                 match result {
@@ -123,19 +127,49 @@ pub async fn run(addr: String, port: u16) -> Result<()> {
 
             message_count += 1;
 
-            let elapsed = moment.elapsed().as_millis() as u64;
-            if elapsed < 330 {
-                // tokio::time::sleep(Duration::from_millis(330 - elapsed)).await;
+            if moment.elapsed() < Duration::from_millis(330) {
+                loop {
+                    if let Some(to) = conn.timeout() {
+                        timeout_instant = Instant::now() + to;
+                    }
+
+                    tokio::select! {
+                        result = timeout(POLL_WAIT, socket.recv_from(&mut read_buf)) =>  {
+                            match result {
+                                Err(_) => { } // No data, ok
+                                Ok(Ok((len, from))) => {
+                                  if let Err(err)=  conn.recv(&mut read_buf[..len],RecvInfo {from,to: socket.local_addr()?}) {
+                                    tracing::error!("conn.recv error {:?}", err);
+                                  } else {
+                                    flush_send!(conn, socket, write_buf, peer);
+                                  }
+                                }
+                                Ok(Err(e)) if e.kind() == io::ErrorKind::WouldBlock  => {}
+                                Ok(Err(e)) => tracing::error!("Error reading packet from socket: {e}")
+                            }
+                        }
+                        _ = sleep_until(timeout_instant) => {
+                            conn.on_timeout();
+                        }
+                    }
+                    if moment.elapsed() + POLL_INTERVAL >= Duration::from_millis(330) {
+                        break;
+                    }
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                }
             } else {
-                tracing::error!("Elapsed time is too long: {} ms", elapsed);
+                tracing::error!("Elapsed time is too long: {:?} ms", moment.elapsed());
             }
+
+            tracing::info!("exited");
+
             let stream_capacity = conn.stream_capacity(stream_id);
-            tracing::info!(
-                "Messages sent: {}, Stats{:?}, stream_cap: {:?}",
-                message_count,
-                conn.stats(),
-                stream_capacity
-            );
+            // tracing::info!(
+            //     "Messages sent: {}, Stats{:?}, stream_cap: {:?}",
+            //     message_count,
+            //     conn.stats(),
+            //     stream_capacity
+            // );
             if let Ok(capacity) = stream_capacity {
                 if capacity < 1000 {
                     tokio::time::sleep(Duration::from_millis(5)).await;
