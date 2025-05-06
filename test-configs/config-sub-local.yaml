@@ -1,8 +1,8 @@
 # We can have from zero to many running subscribers
 # Each subscriber binds to these ports on all interfaces
 subscriber:
-  - addr: "94.156.25.224"
-    ports: "5000-5050"
+  - addr_listen: "94.156.25.224"
+    ports: "5001-5010"
 
 # We have only one publisher that sends blocks to its subscribers
 publisher:
