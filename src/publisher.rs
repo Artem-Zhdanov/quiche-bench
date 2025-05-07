@@ -88,7 +88,7 @@ pub async fn run(
             tracing::info!("Handshake completed ");
         }
 
-        // Main send messages loop. Publisher spin here
+        // Main send messages loop. Publisher spins here
         if stream_id.is_some() {
             let stream_id = stream_id.unwrap();
             let mut offset = 0;

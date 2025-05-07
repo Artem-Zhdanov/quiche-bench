@@ -60,6 +60,8 @@ macro_rules! flush_send {
                 if let Err(err) = $socket.send_to(&$write_buf[..write], $peer).await {
                     tracing::error!("Error to send data to socket {:?}", err);
                 }
+            } else {
+                break;
             }
         }
     }};

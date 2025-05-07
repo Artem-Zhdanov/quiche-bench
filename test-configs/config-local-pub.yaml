@@ -7,4 +7,4 @@ subscriber:
 publisher:
   - addr_listen: "94.156.25.224"
     addr_peer: "94.156.25.224"
-    ports: "5000-5299"
+    ports: "5001-5001"
