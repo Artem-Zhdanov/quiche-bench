@@ -15,7 +15,6 @@ use crate::{
 pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()> {
     let std_sock = StdUdpSocket::bind(format!("{address}:{port}"))?;
     std_sock.set_nonblocking(true)?;
-    detect_gso(&std_sock, max_datagram_size);
 
     let socket = TokioUdpSocket::from_std(std_sock)?;
     tracing::info!("Server started on: {address}:{port}");
