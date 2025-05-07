@@ -31,11 +31,11 @@ pub fn create_config(is_server: bool) -> anyhow::Result<Config> {
     config.set_initial_max_streams_bidi(0);
     config.set_initial_max_streams_uni(1000);
 
-    config.set_max_ack_delay(0); // 1 ms
+    config.set_max_ack_delay(1); // 1 ms
 
     config.enable_hystart(false);
 
-    config.set_max_pacing_rate(0); // 0 no limits
+    // config.set_max_pacing_rate(0); // 0 no limits
 
     config.verify_peer(false);
 

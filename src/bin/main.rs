@@ -5,7 +5,6 @@ use quiche_bench::{
     metrics::init_metrics,
     ports_string_to_vec, publisher, subscriber,
 };
-use rand::Rng;
 use std::time::Duration;
 use tokio::time::sleep; // Import the Rng trait for gen_range
 

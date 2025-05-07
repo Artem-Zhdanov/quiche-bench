@@ -1,8 +1,8 @@
 use anyhow::Result;
 use quiche::{ConnectionId, Header, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
-use std::{io, sync::Arc, time::Duration};
-use tokio::time::{Instant, sleep_until};
+use std::{io, net::SocketAddr, sync::Arc};
+use tokio::time::Instant;
 
 use std::net::UdpSocket as StdUdpSocket;
 use tokio::net::UdpSocket as TokioUdpSocket;
@@ -15,6 +15,7 @@ use crate::{
 pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()> {
     let std_sock = StdUdpSocket::bind(format!("{address}:{port}"))?;
     std_sock.set_nonblocking(true)?;
+    detect_gso(&std_sock, max_datagram_size);
 
     let socket = TokioUdpSocket::from_std(std_sock)?;
     tracing::info!("Server started on: {address}:{port}");
@@ -22,7 +23,7 @@ pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()
     let mut config = configure_server()?;
     let rng = SystemRandom::new();
 
-    let mut conn_opt: Option<(String, quiche::Connection)> = None;
+    let mut conn_opt: Option<(SocketAddr, quiche::Connection)> = None;
 
     let mut read_buf = [0; 65535];
     let mut write_buf = [0; 65535];
@@ -35,7 +36,6 @@ pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()
                     Ok((len, peer_addr)) => {
                         let recv_info = RecvInfo { from: peer_addr, to: socket.local_addr()? };
                         let header = Header::from_slice(&mut read_buf[..len], quiche::MAX_CONN_ID_LEN)?;
-                        let client_id = peer_addr.to_string();
 
                         match &mut conn_opt {
                             Some((_id, conn)) => {
@@ -43,7 +43,7 @@ pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()
                                 flush_send!(conn, socket, write_buf, peer_addr);
                             }
                             None if header.ty == quiche::Type::Initial => {
-                                tracing::info!("New connection: {client_id}");
+                                tracing::info!("New connection: {peer_addr}");
 
                                 let scid = {
                                     let mut id = [0; quiche::MAX_CONN_ID_LEN];
@@ -55,7 +55,7 @@ pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()
                                 conn.recv(&mut read_buf[..len], recv_info)?;
                                 flush_send!(conn, socket, write_buf, peer_addr);
 
-                                conn_opt = Some((client_id, conn));
+                                conn_opt = Some((peer_addr, conn));
                             }
                             _ => {}
                         }
@@ -66,10 +66,11 @@ pub async fn run(metrics: Arc<Metrics>, address: String, port: u16) -> Result<()
             }
 
             _ = wait_optional_deadline(timeout_instant) => {
-                if let Some((_id, conn)) = &mut conn_opt {
+                if let Some((peer_addr, conn)) = &mut conn_opt {
+                    tracing::info!("Called on_timeout()");
                     conn.on_timeout();
-                    tracing::info!("Timeout triggered");
-                }
+                    flush_send!(conn, socket, write_buf, peer_addr.clone());
+                 }
             }
         }
         if let Some((client_id, conn)) = &mut conn_opt {

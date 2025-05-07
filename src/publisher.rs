@@ -3,7 +3,6 @@ use crate::metrics::Metrics;
 use crate::quic_config::configure_client;
 use crate::{MAGIC_NUMBER, flush_send, now_ms, wait_optional_deadline};
 use anyhow::{Result, bail};
-use core::arch;
 use opentelemetry::KeyValue;
 use quiche::{ConnectionId, RecvInfo};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -13,7 +12,7 @@ use std::net::UdpSocket as StdUdpSocket;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket as TokioUdpSocket;
-use tokio::time::{Instant, sleep_until, timeout};
+use tokio::time::{Instant, timeout};
 
 const ESTABLISH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
@@ -125,6 +124,7 @@ pub async fn run(
                             _ = wait_optional_deadline(timeout_instant) => {
                                 tracing::info!("Called on_timeout()");
                                 conn.on_timeout();
+                                flush_send!(conn, socket, write_buf, peer);
                             }
                         }
                     }
@@ -158,7 +158,9 @@ pub async fn run(
                             }
                         }
                         _ = wait_optional_deadline(timeout_instant) => {
+                            tracing::info!("Called on_timeout()");
                             conn.on_timeout();
+                            flush_send!(conn, socket, write_buf, peer);
                         }
                     }
                     if moment.elapsed() + POLL_INTERVAL >= Duration::from_millis(330) {
